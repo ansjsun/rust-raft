@@ -8,3 +8,5 @@ edition = "2018"
 
 [dependencies]
 smol = { version = "0.1"}
+log = "0.4"
+thiserror = "1.0.11"

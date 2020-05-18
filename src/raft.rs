@@ -1,7 +1,19 @@
 use crate::{entity::*, error::*};
+use std::sync::Arc;
+
+pub trait StateMachine {
+    fn apply(&self, command: &[u8], index: u64) -> RaftResult<()>;
+    fn apply_member_change(&self, t: CommondType, index: u64) -> RaftResult<()>;
+    fn apply_leader_change(&self, leader: u64, index: u64) -> RaftResult<()>;
+}
 
 pub struct Raft {
-    raft_config: RaftConfig,
+    id: u64,
+    conf: Arc<Config>,
+    state: RaftState,
+    term: u64,
+    leader: u64,
+    sm: Box<dyn StateMachine>,
 }
 
 pub enum CommondType {
@@ -21,13 +33,8 @@ impl Raft {
 
     pub fn status(&self) {}
 
-    pub fn leader_term(&self) -> (u64, u64) {
-        panic!()
-    }
-
     pub fn is_leader(&self) -> bool {
-        let (leader, _) = self.leader_term();
-        return leader == self.raft_config.node_id;
+        return self.leader == self.id;
     }
 
     pub fn try_to_leader(&self, sync: bool) -> RaftResult<bool> {
