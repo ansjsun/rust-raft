@@ -1,6 +1,8 @@
 pub mod entity;
 pub mod error;
 pub mod raft;
+pub mod raft_log;
+pub mod raft_server;
 pub mod server;
 
 #[macro_use]

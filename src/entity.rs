@@ -1,9 +1,35 @@
-use crate::error::{RaftError, RaftResult};
+use crate::error::{conver, RaftError, RaftResult};
+use futures_util::io::AsyncReadExt;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+pub enum Message {
+    Heartbeat { leader: u64, term: u64 },
+    Vote { apply_index: u64, term: u64 },
+    MessageAppend { index: u64, commond: Vec<u8> },
+}
+
+pub mod entry_type {
+    pub const HEARTBEAT: u8 = 0;
+    pub const VOTE: u8 = 1;
+}
+
+//0 heartbeat
+//1 vote
+//2 message
 // raft_id, entry_type , message
-pub type Entry = (u64, u8, Vec<u8>);
+pub struct Entry {
+    pub id: u64,
+    pub msg: Message,
+}
+
+impl Entry {
+    pub async fn decode<S: AsyncReadExt + Unpin>(mut stream: S) -> RaftResult<Self> {
+        let mut output = [0u8; 8];
+        let bytes = conver(stream.read(&mut output[..]).await)?;
+        panic!();
+    }
+}
 
 pub struct Config {
     pub node_id: u64,
