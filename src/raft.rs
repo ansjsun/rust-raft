@@ -20,7 +20,6 @@ pub struct Raft {
     voted: Mutex<u64>,
     leader: AtomicU64,
     election_elapsed: AtomicUsize,
-    sm: Arc<StateMachine + Sync + Send>,
     last_heart: AtomicU64,
     raft_log: RaftLog,
 }
