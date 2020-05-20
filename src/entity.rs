@@ -19,7 +19,6 @@ pub enum Entry {
     Log {
         index: u64,
         term: u64,
-        leader: u64,
         commond: Vec<u8>,
     },
 }
@@ -47,6 +46,10 @@ impl HeartbeatEntry {
         let mut buf = Vec::default();
         conver(stream.read_to_end(&mut buf).await)?;
 
+        Ok((raft_id, Self::decode(buf)?))
+    }
+
+    pub fn decode(buf: Vec<u8>) -> RaftResult<Self> {
         let entry = match buf[0] {
             entry_type::HEARTBEAT => HeartbeatEntry::Heartbeat {
                 term: read_u64_slice(&buf, 1),
@@ -59,27 +62,52 @@ impl HeartbeatEntry {
             },
             _ => return Err(RaftError::TypeErr),
         };
-        Ok((raft_id, entry))
+        Ok(entry)
     }
 }
 
 impl Entry {
+    pub fn len(&self) -> u64 {
+        match &self {
+            Entry::Log { commond, .. } => 24 + commond.len() as u64,
+        }
+    }
+
+    pub fn ecode(&self) -> Vec<u8> {
+        let len = self.len() as usize;
+        let mut vec = Vec::with_capacity(4 + len);
+        vec.extend_from_slice(&u32::to_be_bytes(len as u32));
+        match &self {
+            Entry::Log {
+                index,
+                term,
+                commond,
+            } => {
+                vec.push(entry_type::LOG);
+                vec.extend_from_slice(&u64::to_be_bytes(*index));
+                vec.extend_from_slice(&u64::to_be_bytes(*term));
+                vec.extend_from_slice(commond);
+            }
+        }
+        vec
+    }
     pub async fn decode_stream<S: AsyncReadExt + Unpin>(mut stream: S) -> RaftResult<(u64, Self)> {
         let raft_id = read_u64(&mut stream).await?;
         let mut buf = Vec::default();
         conver(stream.read_to_end(&mut buf).await)?;
+        Ok((raft_id, Self::decode(buf)?))
+    }
 
+    pub fn decode(buf: Vec<u8>) -> RaftResult<Self> {
         let entry = match buf[0] {
             entry_type::LOG => Entry::Log {
                 term: read_u64_slice(&buf, 1),
-                leader: read_u64_slice(&buf, 9),
-                index: read_u64_slice(&buf, 17),
+                index: read_u64_slice(&buf, 9),
                 commond: buf,
             },
             _ => return Err(RaftError::TypeErr),
         };
-
-        Ok((raft_id, entry))
+        Ok(entry)
     }
 }
 

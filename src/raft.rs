@@ -37,7 +37,7 @@ impl Raft {
         return Ok(());
     }
 
-    pub fn vote(&self, apply_index: u64, term: u64) -> RaftResult<()> {
+    pub fn vote(&self, _leader: u64, apply_index: u64, term: u64) -> RaftResult<()> {
         let self_term = self.term.load(SeqCst);
         if self_term > term {
             return Err(RaftError::TermLess);
