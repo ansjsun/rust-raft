@@ -83,14 +83,18 @@ impl TransportServer {
 
 pub async fn apply_heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) -> RaftResult<()> {
     let entry = Entry::decode(&mut stream).await?;
-    let raft = match rs.rafts.read().unwrap().get(&entry.id) {
+    let raft = match rs.rafts.read().unwrap().get(&entry.raft_id) {
         Some(v) => v.clone(),
-        None => return Err(RaftError::RaftNotFound(entry.id)),
+        None => return Err(RaftError::RaftNotFound(entry.raft_id)),
     };
 
     match entry.msg {
         Message::Heartbeat { leader, term } => raft.heartbeat(leader, term),
-        Message::Vote { apply_index, term } => raft.vote(apply_index, term),
+        Message::Vote {
+            leader,
+            term,
+            apply_index,
+        } => raft.vote(apply_index, term),
         _ => return Err(RaftError::TypeErr),
     }
 }

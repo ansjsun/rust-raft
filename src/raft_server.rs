@@ -1,4 +1,9 @@
-use crate::{entity::*, error::*, raft::Raft};
+use crate::{
+    entity::*,
+    error::*,
+    raft::Raft,
+    state_machine::{DefResolver, Resolver},
+};
 use log::{error, info};
 use smol::{Async, Task};
 use std::borrow::Cow;
@@ -37,7 +42,7 @@ impl RaftServer {
     }
 
     pub fn get_raft(&self, id: u64) -> RaftResult<Arc<Raft>> {
-        match self.rafts.read().unwrap().remove(&id) {
+        match self.rafts.write().unwrap().remove(&id) {
             Some(r) => Ok(r),
             None => Err(RaftError::RaftNotFound(id)),
         }

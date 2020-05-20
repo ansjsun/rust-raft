@@ -1,16 +1,11 @@
+use crate::state_machine::CommondType;
+use crate::storage::RaftLog;
 use crate::{entity::*, error::*};
-use raft_log::RaftLog;
 use std::pin::Pin;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst},
     Arc, Mutex,
 };
-
-pub trait StateMachine {
-    fn apply(&self, command: &[u8], index: u64) -> RaftResult<()>;
-    fn apply_member_change(&self, t: CommondType, index: u64) -> RaftResult<()>;
-    fn apply_leader_change(&self, leader: u64, index: u64) -> RaftResult<()>;
-}
 
 pub struct Raft {
     id: u64,
@@ -22,12 +17,6 @@ pub struct Raft {
     election_elapsed: AtomicUsize,
     last_heart: AtomicU64,
     raft_log: RaftLog,
-}
-
-pub enum CommondType {
-    Data,
-    AddNode,
-    RemoveNode,
 }
 
 impl Raft {
