@@ -67,15 +67,20 @@ impl HeartbeatEntry {
 }
 
 impl Entry {
-    pub fn len(&self) -> u64 {
+    pub fn info(&self) -> (u64, u64, u64) {
         match &self {
-            Entry::Log { commond, .. } => 24 + commond.len() as u64,
+            Entry::Log {
+                term,
+                index,
+                commond,
+                ..
+            } => (*term, *index, 24 + commond.len() as u64),
         }
     }
 
     pub fn ecode(&self) -> Vec<u8> {
-        let len = self.len() as usize;
-        let mut vec = Vec::with_capacity(4 + len);
+        let (_, _, len) = self.info();
+        let mut vec = Vec::with_capacity(20 + len as usize);
         vec.extend_from_slice(&u32::to_be_bytes(len as u32));
         match &self {
             Entry::Log {
@@ -116,6 +121,8 @@ pub struct Config {
     pub heartbeat_port: u16,
     pub replicate_port: u16,
     pub log_path: String,
+    // how size of MB for file
+    pub log_size_m: u64,
 }
 
 pub enum RaftState {
