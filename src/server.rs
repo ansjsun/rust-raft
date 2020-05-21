@@ -90,8 +90,8 @@ pub async fn apply_heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) 
         HeartbeatEntry::Vote {
             leader,
             term,
-            apply_index,
-        } => raft.vote(leader, apply_index, term),
+            committed,
+        } => raft.vote(leader, committed, term),
         _ => return Err(RaftError::TypeErr),
     }
 }
@@ -103,13 +103,5 @@ pub async fn apply_log(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) -> Raf
         None => return Err(RaftError::RaftNotFound(raft_id)),
     };
 
-    match entry {
-        HeartbeatEntry::Heartbeat { leader, term } => raft.heartbeat(leader, term),
-        HeartbeatEntry::Vote {
-            leader,
-            term,
-            apply_index,
-        } => raft.vote(leader, apply_index, term),
-        _ => return Err(RaftError::TypeErr),
-    }
+    panic!()
 }

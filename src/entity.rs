@@ -9,7 +9,7 @@ pub trait Decode {
 }
 
 pub trait Encode {
-    fn ecode(&self) -> Vec<u8>;
+    fn encode(&self) -> &Vec<u8>;
 }
 
 pub enum HeartbeatEntry {
@@ -20,7 +20,7 @@ pub enum HeartbeatEntry {
     Vote {
         term: u64,
         leader: u64,
-        apply_index: u64,
+        committed: u64,
     },
 }
 
@@ -49,16 +49,9 @@ fn read_u64_slice(s: &[u8], start: usize) -> u64 {
     u64::from_be_bytes(unsafe { *ptr })
 }
 
-impl HeartbeatEntry {
-    pub async fn decode_stream<S: AsyncReadExt + Unpin>(mut stream: S) -> RaftResult<(u64, Self)> {
-        let raft_id = read_u64(&mut stream).await?;
-        let mut buf = Vec::default();
-        conver(stream.read_to_end(&mut buf).await)?;
-
-        Ok((raft_id, Self::decode(buf)?))
-    }
-
-    pub fn decode(buf: Vec<u8>) -> RaftResult<Self> {
+impl Decode for HeartbeatEntry {
+    type Item = Self;
+    fn decode(buf: Vec<u8>) -> RaftResult<Self::Item> {
         let entry = match buf[0] {
             entry_type::HEARTBEAT => HeartbeatEntry::Heartbeat {
                 term: read_u64_slice(&buf, 1),
@@ -67,11 +60,71 @@ impl HeartbeatEntry {
             entry_type::VOTE => HeartbeatEntry::Vote {
                 term: read_u64_slice(&buf, 1),
                 leader: read_u64_slice(&buf, 9),
-                apply_index: read_u64_slice(&buf, 17),
+                committed: read_u64_slice(&buf, 17),
             },
             _ => return Err(RaftError::TypeErr),
         };
         Ok(entry)
+    }
+}
+
+impl HeartbeatEntry {
+    fn encode(&self) -> Vec<u8> {
+        let mut vec;
+        match self {
+            HeartbeatEntry::Heartbeat { term, leader } => {
+                vec = Vec::with_capacity(17);
+                vec.push(entry_type::HEARTBEAT);
+                vec.extend_from_slice(&u64::to_be_bytes(*term));
+                vec.extend_from_slice(&u64::to_be_bytes(*leader));
+            }
+            HeartbeatEntry::Vote {
+                term,
+                leader,
+                committed,
+            } => {
+                vec = Vec::with_capacity(25);
+                vec.push(entry_type::VOTE);
+                vec.extend_from_slice(&u64::to_be_bytes(*term));
+                vec.extend_from_slice(&u64::to_be_bytes(*leader));
+                vec.extend_from_slice(&u64::to_be_bytes(*committed));
+            }
+        }
+        vec
+    }
+}
+
+impl HeartbeatEntry {
+    pub async fn decode_stream<S: AsyncReadExt + Unpin>(mut stream: S) -> RaftResult<(u64, Self)> {
+        let raft_id = read_u64(&mut stream).await?;
+        let mut buf = Vec::default();
+        conver(stream.read_to_end(&mut buf).await)?;
+
+        Ok((raft_id, Self::decode(buf)?))
+    }
+}
+
+impl Decode for Entry {
+    type Item = Self;
+    fn decode(buf: Vec<u8>) -> RaftResult<Self::Item> {
+        let entry = match buf[0] {
+            entry_type::LOG => Entry::Log {
+                term: read_u64_slice(&buf, 1),
+                index: read_u64_slice(&buf, 9),
+                commond: buf,
+            },
+            _ => return Err(RaftError::TypeErr),
+        };
+        Ok(entry)
+    }
+}
+
+impl Encode for Entry {
+    fn encode(&self) -> &Vec<u8> {
+        let (_, _, len) = self.info();
+        match &self {
+            Entry::Log { commond, .. } => commond,
+        }
     }
 }
 
@@ -87,41 +140,11 @@ impl Entry {
         }
     }
 
-    pub fn ecode(&self) -> Vec<u8> {
-        let (_, _, len) = self.info();
-        let mut vec = Vec::with_capacity(20 + len as usize);
-        vec.extend_from_slice(&u32::to_be_bytes(len as u32));
-        match &self {
-            Entry::Log {
-                index,
-                term,
-                commond,
-            } => {
-                vec.push(entry_type::LOG);
-                vec.extend_from_slice(&u64::to_be_bytes(*index));
-                vec.extend_from_slice(&u64::to_be_bytes(*term));
-                vec.extend_from_slice(commond);
-            }
-        }
-        vec
-    }
     pub async fn decode_stream<S: AsyncReadExt + Unpin>(mut stream: S) -> RaftResult<(u64, Self)> {
         let raft_id = read_u64(&mut stream).await?;
         let mut buf = Vec::default();
         conver(stream.read_to_end(&mut buf).await)?;
         Ok((raft_id, Self::decode(buf)?))
-    }
-
-    pub fn decode(buf: Vec<u8>) -> RaftResult<Self> {
-        let entry = match buf[0] {
-            entry_type::LOG => Entry::Log {
-                term: read_u64_slice(&buf, 1),
-                index: read_u64_slice(&buf, 9),
-                commond: buf,
-            },
-            _ => return Err(RaftError::TypeErr),
-        };
-        Ok(entry)
     }
 }
 

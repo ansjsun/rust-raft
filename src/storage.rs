@@ -138,7 +138,7 @@ impl RaftLog {
                 return Ok(());
             }
 
-            let bs = e.ecode();
+            let bs = e.encode();
 
             let mut file = self.log_file.write().unwrap();
 
