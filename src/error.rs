@@ -18,6 +18,8 @@ pub enum RaftError {
     TypeErr,
     #[error("raft not found by id:{0}")]
     RaftNotFound(u64),
+    #[error("raft not leader leader is:{0}")]
+    NotLeader(u64),
 }
 
 pub type RaftResult<T> = std::result::Result<T, RaftError>;

@@ -97,6 +97,11 @@ impl RaftLog {
         })
     }
 
+    pub fn info(&self) -> (u64, u64) {
+        let mem = self.log_mem.read().unwrap();
+        (mem.term, mem.committed)
+    }
+
     pub fn save(&self, e: Entry) -> RaftResult<()> {
         let mut mem = self.log_mem.write().unwrap();
         let (term, index, len) = e.info();

@@ -1,9 +1,8 @@
 use crate::state_machine::CommondType;
 use crate::storage::RaftLog;
 use crate::{entity::*, error::*};
-use std::pin::Pin;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst},
+    atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
     Arc, Mutex,
 };
 
@@ -17,10 +16,23 @@ pub struct Raft {
     election_elapsed: AtomicUsize,
     last_heart: AtomicU64,
     raft_log: RaftLog,
+    store: RaftLog,
 }
 
 impl Raft {
-    pub fn submit<C: AsRef<[u8]>>(&self, ct: CommondType, cmd: C) {
+    pub fn submit(&self, cmd: Vec<u8>) -> RaftResult<()> {
+        if !self.is_leader() {
+            return Err(RaftError::NotLeader(self.leader.load(SeqCst)));
+        }
+
+        let (term, index) = self.store.info();
+
+        self.store.save(Entry::Log {
+            term: term,
+            index: index + 1,
+            commond: cmd,
+        })?;
+
         panic!()
     }
 
@@ -37,7 +49,7 @@ impl Raft {
         return Ok(());
     }
 
-    pub fn vote(&self, _leader: u64, apply_index: u64, term: u64) -> RaftResult<()> {
+    pub fn vote(&self, _leader: u64, committed: u64, term: u64) -> RaftResult<()> {
         let self_term = self.term.load(SeqCst);
         if self_term > term {
             return Err(RaftError::TermLess);

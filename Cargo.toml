@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 smol = { version = "0.1"}
 log = "0.4"
-thiserror = "1.0.11"
+thiserror = "1.0.18"
+futures = { version = "0.3.5", default-features = false, features = ["std"] }
 futures-util = { version = "0.3.5", default-features = false, features = ["std"] }
 futures-io = { version = "0.3.5", default-features = false, features = ["std"] }

@@ -1,10 +1,11 @@
-pub mod entity;
-pub mod error;
-pub mod raft;
-pub mod raft_server;
-pub mod server;
-pub mod state_machine;
-pub mod storage;
+mod client;
+mod entity;
+mod error;
+mod raft;
+mod raft_server;
+mod server;
+mod state_machine;
+mod storage;
 #[macro_use]
 extern crate thiserror;
 

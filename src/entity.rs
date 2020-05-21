@@ -3,6 +3,15 @@ use futures_util::io::AsyncReadExt;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+pub trait Decode {
+    type Item;
+    fn decode(buf: Vec<u8>) -> RaftResult<Self::Item>;
+}
+
+pub trait Encode {
+    fn ecode(&self) -> Vec<u8>;
+}
+
 pub enum HeartbeatEntry {
     Heartbeat {
         term: u64,
