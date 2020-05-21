@@ -8,8 +8,8 @@ use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-static file_start: &str = "raft_";
-static file_end: &str = ".log";
+static FILE_START: &str = "raft_";
+static FILE_END: &str = ".log";
 const MEM_CAPACITY: usize = 20000;
 
 pub struct RaftLog {
@@ -39,7 +39,7 @@ impl RaftLog {
             .filter(|p| !p.is_dir())
             .filter(|p| {
                 let name = p.to_str().unwrap();
-                name.starts_with(file_start) && name.ends_with(file_end)
+                name.starts_with(FILE_START) && name.ends_with(FILE_END)
             })
             .map(|p| {
                 let name = p.to_str().unwrap();
@@ -48,8 +48,8 @@ impl RaftLog {
             .max()
             .unwrap_or(0);
 
-        let mut log_file: LogFile;
-        let mut log_mem: LogMem;
+        let log_file: LogFile;
+        let log_mem: LogMem;
 
         if file_id == 0 {
             //mean's new file
@@ -62,7 +62,6 @@ impl RaftLog {
             let mut offset: u64 = 0;
             let mut len = file.metadata().unwrap().len();
             let mut pre_offset: u64 = 0;
-            let mut index = 0;
             loop {
                 if len == 0 {
                     log_file = LogFile::new(dir.clone(), file_id, len)?;
@@ -182,7 +181,7 @@ struct LogFile {
 
 impl LogFile {
     fn new(dir: PathBuf, file_id: u64, offset: u64) -> RaftResult<LogFile> {
-        let file_path = dir.join(format!("raft_{}.id", file_id));
+        let file_path = dir.join(format!("{}{}{}", FILE_START, file_id, FILE_END));
         let mut file = conver(fs::File::open(file_path))?;
         if offset > 0 {
             conver(file.seek(io::SeekFrom::Start(offset)))?;
