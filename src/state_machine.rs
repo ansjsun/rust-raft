@@ -15,16 +15,25 @@ pub trait StateMachine {
 }
 
 pub trait Resolver {
-    fn resolver(&self, node_id: &u64) -> RaftResult<&str>;
+    fn heartbeat_addr(&self, node_id: &u64) -> RaftResult<&str>;
+    fn log_addr(&self, node_id: &u64) -> RaftResult<&str>;
 }
 
 pub struct DefResolver {
-    map: RwLock<HashMap<u64, &'static str>>,
+    log_addrs: HashMap<u64, &'static str>,
+    internal_addrs: HashMap<u64, &'static str>,
 }
 
 impl Resolver for DefResolver {
-    fn resolver(&self, node_id: &u64) -> RaftResult<&str> {
-        match self.map.read().unwrap().get(node_id) {
+    fn heartbeat_addr(&self, node_id: &u64) -> RaftResult<&str> {
+        match self.internal_addrs.get(node_id) {
+            Some(v) => Ok(v),
+            None => Err(RaftError::NotfoundAddr(*node_id)),
+        }
+    }
+
+    fn log_addr(&self, node_id: &u64) -> RaftResult<&str> {
+        match self.log_addrs.get(node_id) {
             Some(v) => Ok(v),
             None => Err(RaftError::NotfoundAddr(*node_id)),
         }
@@ -34,21 +43,37 @@ impl Resolver for DefResolver {
 impl DefResolver {
     pub fn new() -> Self {
         return DefResolver {
-            map: RwLock::new(HashMap::new()),
+            log_addrs: HashMap::new(),
+            internal_addrs: HashMap::new(),
         };
     }
 
-    pub fn add_node(&self, node_id: u64, addr: String) {
-        let mut map = self.map.write().unwrap();
-        if let Some(v) = map.remove(&node_id) {
+    pub fn add_node(&mut self, node_id: u64, host: String, log_port: u16, addr_port: u16) {
+        if let Some(v) = self.log_addrs.remove(&node_id) {
             std::mem::forget(v);
         }
-        map.insert(node_id, crate::string_to_static_str(addr));
+
+        if let Some(v) = self.internal_addrs.remove(&node_id) {
+            std::mem::forget(v);
+        }
+
+        self.log_addrs.insert(
+            node_id,
+            crate::string_to_static_str(format!("{}:{}", host, log_port)),
+        );
+
+        self.internal_addrs.insert(
+            node_id,
+            crate::string_to_static_str(format!("{}:{}", host, log_port)),
+        );
     }
 
     pub fn remove_node(&self, node_id: u64) {
-        let mut map = self.map.write().unwrap();
-        if let Some(v) = map.remove(&node_id) {
+        if let Some(v) = self.log_addrs.remove(&node_id) {
+            std::mem::forget(v);
+        }
+
+        if let Some(v) = self.internal_addrs.remove(&node_id) {
             std::mem::forget(v);
         }
     }

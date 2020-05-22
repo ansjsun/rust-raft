@@ -79,15 +79,15 @@ impl TransportServer {
 }
 
 pub async fn apply_heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) -> RaftResult<()> {
-    let (raft_id, entry) = HeartbeatEntry::decode_stream(&mut stream).await?;
+    let (raft_id, entry) = InternalEntry::decode_stream(&mut stream).await?;
     let raft = match rs.rafts.read().unwrap().get(&raft_id) {
         Some(v) => v.clone(),
         None => return Err(RaftError::RaftNotFound(raft_id)),
     };
 
     match entry {
-        HeartbeatEntry::Heartbeat { leader, term } => raft.heartbeat(leader, term),
-        HeartbeatEntry::Vote {
+        InternalEntry::Heartbeat { leader, term } => raft.heartbeat(leader, term),
+        InternalEntry::Vote {
             leader,
             term,
             committed,
@@ -97,7 +97,7 @@ pub async fn apply_heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) 
 }
 
 pub async fn apply_log(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) -> RaftResult<()> {
-    let (raft_id, entry) = HeartbeatEntry::decode_stream(&mut stream).await?;
+    let (raft_id, entry) = InternalEntry::decode_stream(&mut stream).await?;
     let raft = match rs.rafts.read().unwrap().get(&raft_id) {
         Some(v) => v.clone(),
         None => return Err(RaftError::RaftNotFound(raft_id)),

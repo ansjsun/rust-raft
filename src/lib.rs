@@ -1,8 +1,8 @@
-mod client;
 mod entity;
 mod error;
 mod raft;
 mod raft_server;
+mod sender;
 mod server;
 mod state_machine;
 mod storage;

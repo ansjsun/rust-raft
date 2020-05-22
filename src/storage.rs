@@ -124,6 +124,14 @@ impl RaftLog {
         Ok(())
     }
 
+    pub fn get_log_binary(&self, index: u64) -> Vec<u8> {
+        let mem = self.log_mem.read().unwrap();
+        mem.queue
+            .get((index - mem.offset) as usize)
+            .unwrap()
+            .encode()
+    }
+
     pub fn move_to_file(&self) -> RaftResult<()> {
         {
             let mem = self.log_mem.read().unwrap();

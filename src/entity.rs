@@ -9,10 +9,10 @@ pub trait Decode {
 }
 
 pub trait Encode {
-    fn encode(&self) -> &Vec<u8>;
+    fn encode(&self) -> Vec<u8>;
 }
 
-pub enum HeartbeatEntry {
+pub enum InternalEntry {
     Heartbeat {
         term: u64,
         leader: u64,
@@ -26,8 +26,8 @@ pub enum HeartbeatEntry {
 
 pub enum Entry {
     Log {
-        index: u64,
         term: u64,
+        index: u64,
         commond: Vec<u8>,
     },
 }
@@ -49,15 +49,15 @@ fn read_u64_slice(s: &[u8], start: usize) -> u64 {
     u64::from_be_bytes(unsafe { *ptr })
 }
 
-impl Decode for HeartbeatEntry {
+impl Decode for InternalEntry {
     type Item = Self;
     fn decode(buf: Vec<u8>) -> RaftResult<Self::Item> {
         let entry = match buf[0] {
-            entry_type::HEARTBEAT => HeartbeatEntry::Heartbeat {
+            entry_type::HEARTBEAT => InternalEntry::Heartbeat {
                 term: read_u64_slice(&buf, 1),
                 leader: read_u64_slice(&buf, 9),
             },
-            entry_type::VOTE => HeartbeatEntry::Vote {
+            entry_type::VOTE => InternalEntry::Vote {
                 term: read_u64_slice(&buf, 1),
                 leader: read_u64_slice(&buf, 9),
                 committed: read_u64_slice(&buf, 17),
@@ -68,17 +68,17 @@ impl Decode for HeartbeatEntry {
     }
 }
 
-impl HeartbeatEntry {
+impl Encode for InternalEntry {
     fn encode(&self) -> Vec<u8> {
         let mut vec;
         match self {
-            HeartbeatEntry::Heartbeat { term, leader } => {
+            InternalEntry::Heartbeat { term, leader } => {
                 vec = Vec::with_capacity(17);
                 vec.push(entry_type::HEARTBEAT);
                 vec.extend_from_slice(&u64::to_be_bytes(*term));
                 vec.extend_from_slice(&u64::to_be_bytes(*leader));
             }
-            HeartbeatEntry::Vote {
+            InternalEntry::Vote {
                 term,
                 leader,
                 committed,
@@ -94,7 +94,7 @@ impl HeartbeatEntry {
     }
 }
 
-impl HeartbeatEntry {
+impl InternalEntry {
     pub async fn decode_stream<S: AsyncReadExt + Unpin>(mut stream: S) -> RaftResult<(u64, Self)> {
         let raft_id = read_u64(&mut stream).await?;
         let mut buf = Vec::default();
@@ -120,11 +120,22 @@ impl Decode for Entry {
 }
 
 impl Encode for Entry {
-    fn encode(&self) -> &Vec<u8> {
-        let (_, _, len) = self.info();
+    fn encode(&self) -> Vec<u8> {
+        let mut vec: Vec<u8>;
         match &self {
-            Entry::Log { commond, .. } => commond,
+            Entry::Log {
+                term,
+                index,
+                commond,
+            } => {
+                vec = Vec::with_capacity(17 + commond.len());
+                vec.push(entry_type::LOG);
+                vec.extend_from_slice(&u64::to_be_bytes(*term));
+                vec.extend_from_slice(&u64::to_be_bytes(*index));
+                vec.extend_from_slice(commond);
+            }
         }
+        vec
     }
 }
 

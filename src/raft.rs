@@ -1,6 +1,6 @@
 use crate::state_machine::CommondType;
 use crate::storage::RaftLog;
-use crate::{entity::*, error::*};
+use crate::{entity::*, error::*, sender::Sender};
 use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
     Arc, Mutex,
@@ -17,9 +17,11 @@ pub struct Raft {
     last_heart: AtomicU64,
     raft_log: RaftLog,
     store: RaftLog,
+    replicas: Vec<u64>,
 }
 
 impl Raft {
+    //this function only call by leader
     pub fn submit(&self, cmd: Vec<u8>) -> RaftResult<()> {
         if !self.is_leader() {
             return Err(RaftError::NotLeader(self.leader.load(SeqCst)));
@@ -27,11 +29,22 @@ impl Raft {
 
         let (term, index) = self.store.info();
 
+        let index = index + 1;
+
         self.store.save(Entry::Log {
             term: term,
-            index: index + 1,
+            index: index,
             commond: cmd,
         })?;
+
+        //if here unwrap fail , may be program have a bug
+        let entry = &self.store.get_log_binary(index);
+        let raft_id = &self.id;
+        smol::run(async {
+            for node_id in &self.replicas {
+                smol::Task::spawn(async { Sender::send_log(node_id, raft_id, entry).await });
+            }
+        });
 
         panic!()
     }
