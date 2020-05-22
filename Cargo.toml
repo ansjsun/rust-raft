@@ -12,4 +12,5 @@ thiserror = "1.0.18"
 smol = { version = "0.1", features = ["tokio02"] }
 futures = { version = "0.3.5", default-features = false, features = ["std"] }
 crossbeam = "0.7"
-
+futures-util = { version = "0.3.5", default-features = false, features = ["std"] }
+futures-io = { version = "0.3.5", default-features = false, features = ["std"] }

@@ -39,10 +39,11 @@ impl Raft {
 
         //if here unwrap fail , may be program have a bug
         let entry = &self.store.get_log_binary(index);
-        let raft_id = &self.id;
+        let raft_id = self.id;
+        let replicas = &self.replicas;
         smol::run(async {
-            for node_id in &self.replicas {
-                smol::Task::spawn(async { Sender::send_log(node_id, raft_id, entry).await });
+            for node_id in replicas {
+                smol::Task::spawn(async { Sender::send_log(node_id, &raft_id, entry).await });
             }
         });
 
