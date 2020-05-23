@@ -68,7 +68,7 @@ impl DefResolver {
         );
     }
 
-    pub fn remove_node(&self, node_id: u64) {
+    pub fn remove_node(&mut self, node_id: u64) {
         if let Some(v) = self.log_addrs.remove(&node_id) {
             std::mem::forget(v);
         }

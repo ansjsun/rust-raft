@@ -12,6 +12,12 @@ pub trait Encode {
     fn encode(&self) -> Vec<u8>;
 }
 
+pub mod entry_type {
+    pub const HEARTBEAT: u8 = 0;
+    pub const VOTE: u8 = 1;
+    pub const LOG: u8 = 2;
+}
+
 pub enum InternalEntry {
     Heartbeat {
         term: u64,
@@ -30,12 +36,6 @@ pub enum Entry {
         index: u64,
         commond: Vec<u8>,
     },
-}
-
-pub mod entry_type {
-    pub const HEARTBEAT: u8 = 0;
-    pub const VOTE: u8 = 1;
-    pub const LOG: u8 = 2;
 }
 
 async fn read_u64<S: AsyncReadExt + Unpin>(mut stream: S) -> RaftResult<u64> {

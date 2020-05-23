@@ -1,10 +1,13 @@
 use crate::state_machine::CommondType;
+use crate::state_machine::Resolver;
 use crate::storage::RaftLog;
 use crate::{entity::*, error::*, sender::Sender};
+use log::error;
 use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
     Arc, Mutex,
 };
+use tokio::sync::mpsc;
 
 pub struct Raft {
     id: u64,
@@ -18,36 +21,64 @@ pub struct Raft {
     raft_log: RaftLog,
     store: RaftLog,
     replicas: Vec<u64>,
+    pub resolver: Arc<dyn Resolver + Sync + Send + 'static>,
 }
 
 impl Raft {
     //this function only call by leader
-    pub fn submit(&self, cmd: Vec<u8>) -> RaftResult<()> {
+    pub fn submit(self: Arc<Raft>, cmd: Vec<u8>) -> RaftResult<()> {
         if !self.is_leader() {
             return Err(RaftError::NotLeader(self.leader.load(SeqCst)));
         }
 
         let (term, index) = self.store.info();
 
-        let index = index + 1;
-
-        self.store.save(Entry::Log {
+        let entry = Entry::Log {
             term: term,
-            index: index,
+            index: index + 1,
             commond: cmd,
-        })?;
+        };
 
         //if here unwrap fail , may be program have a bug
-        let entry = &self.store.get_log_binary(index);
-        let raft_id = self.id;
-        let replicas = &self.replicas;
-        smol::run(async {
-            for node_id in replicas {
-                smol::Task::spawn(async { Sender::send_log(node_id, &raft_id, entry).await });
-            }
-        });
+        let data = Arc::new(entry.encode());
+        self.store.save(entry)?;
 
-        panic!()
+        let raft = self.clone();
+
+        let len = raft.replicas.len();
+
+        let (mut tx, mut rx) = mpsc::channel(len);
+        smol::run(async {
+            for i in 0..len {
+                let entry = data.clone();
+                let raft = self.clone();
+                let node_id = self.replicas[i];
+                let mut tx = tx.clone();
+                smol::Task::spawn(async move {
+                    let _ = tx.try_send(Sender::send_log(node_id, raft, entry).await);
+                })
+                .detach();
+            }
+
+            let mut need = len / 2;
+
+            while let Some(res) = rx.recv().await {
+                match res {
+                    Err(e) => error!("submit log has err:[{:?}]", e),
+                    Ok(v) => {
+                        need -= 1;
+                        if need == 0 {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+
+            Err(RaftError::NotEnoughRecipient(
+                len as u16 / 2,
+                (len / 2 - need) as u16,
+            ))
+        })
     }
 
     // use this function make sure raft is follower
