@@ -16,10 +16,10 @@ pub struct Raft {
     term: AtomicU64,
     voted: Mutex<u64>,
     leader: AtomicU64,
+    pub apply: AtomicU64,
     election_elapsed: AtomicUsize,
     last_heart: AtomicU64,
-    raft_log: RaftLog,
-    store: RaftLog,
+    pub store: RaftLog,
     pub replicas: Vec<u64>,
     pub resolver: Arc<dyn Resolver + Sync + Send + 'static>,
     sm: Arc<dyn StateMachine + Sync + Send>,
@@ -34,18 +34,18 @@ impl Raft {
 
         let (term, index) = self.store.info();
 
-        let entry = Entry::Log {
+        let entry = Entry::Commit {
             term: term,
             index: index + 1,
             commond: cmd,
         };
 
         let data = Arc::new(entry.encode());
-        self.store.save(entry)?;
+        self.store.commit(entry)?;
 
         Sender::send_log(self.clone(), &data)?;
 
-        if let Some(Entry::Log {
+        if let Some(Entry::Commit {
             term,
             index,
             commond,

@@ -15,7 +15,8 @@ pub trait Encode {
 pub mod entry_type {
     pub const HEARTBEAT: u8 = 0;
     pub const VOTE: u8 = 1;
-    pub const LOG: u8 = 2;
+    pub const Commit: u8 = 2;
+    pub const Apply: u8 = 2;
 }
 
 pub enum InternalEntry {
@@ -31,10 +32,14 @@ pub enum InternalEntry {
 }
 
 pub enum Entry {
-    Log {
+    Commit {
         term: u64,
         index: u64,
         commond: Vec<u8>,
+    },
+    Apply {
+        term: u64,
+        index: u64,
     },
 }
 
@@ -108,10 +113,14 @@ impl Decode for Entry {
     type Item = Self;
     fn decode(buf: Vec<u8>) -> RaftResult<Self::Item> {
         let entry = match buf[0] {
-            entry_type::LOG => Entry::Log {
+            entry_type::Commit => Entry::Commit {
                 term: read_u64_slice(&buf, 1),
                 index: read_u64_slice(&buf, 9),
                 commond: buf,
+            },
+            entry_type::Apply => Entry::Apply {
+                term: read_u64_slice(&buf, 1),
+                index: read_u64_slice(&buf, 9),
             },
             _ => return Err(RaftError::TypeErr),
         };
@@ -123,16 +132,22 @@ impl Encode for Entry {
     fn encode(&self) -> Vec<u8> {
         let mut vec: Vec<u8>;
         match &self {
-            Entry::Log {
+            Entry::Commit {
                 term,
                 index,
                 commond,
             } => {
                 vec = Vec::with_capacity(17 + commond.len());
-                vec.push(entry_type::LOG);
+                vec.push(entry_type::Commit);
                 vec.extend_from_slice(&u64::to_be_bytes(*term));
                 vec.extend_from_slice(&u64::to_be_bytes(*index));
                 vec.extend_from_slice(commond);
+            }
+            Entry::Apply { term, index } => {
+                vec = Vec::with_capacity(17);
+                vec.push(entry_type::Apply);
+                vec.extend_from_slice(&u64::to_be_bytes(*term));
+                vec.extend_from_slice(&u64::to_be_bytes(*index));
             }
         }
         vec
@@ -142,12 +157,13 @@ impl Encode for Entry {
 impl Entry {
     pub fn info(&self) -> (u64, u64, u64) {
         match &self {
-            Entry::Log {
+            Entry::Commit {
                 term,
                 index,
                 commond,
                 ..
-            } => (*term, *index, 24 + commond.len() as u64),
+            } => (*term, *index, 17 + commond.len() as u64),
+            Entry::Apply { term, index } => (*term, *index, 17),
         }
     }
 

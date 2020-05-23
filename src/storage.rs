@@ -67,7 +67,8 @@ impl RaftLog {
                     let mut buf = Vec::with_capacity(dl as usize);
                     conver(file.read(&mut buf))?;
                     let index = match Entry::decode(buf)? {
-                        Entry::Log { index, .. } => index,
+                        Entry::Commit { index, .. } => index,
+                        _ => panic!("log type has err"),
                     };
                     log_mem = LogMem::new(MEM_CAPACITY, index);
                     log_file = LogFile::new(dir.clone(), file_id, len)?;
@@ -95,7 +96,7 @@ impl RaftLog {
         (mem.term, mem.committed)
     }
 
-    pub fn save(&self, e: Entry) -> RaftResult<()> {
+    pub fn commit(&self, e: Entry) -> RaftResult<()> {
         let mut mem = self.log_mem.write().unwrap();
         let (term, index, len) = e.info();
         if mem.term > term {

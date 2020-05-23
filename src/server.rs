@@ -5,13 +5,17 @@ use crate::{
     state_machine::{DefResolver, Resolver},
 };
 
+use crate::storage::RaftLog;
 use log::{error, info};
 use smol::{Async, Task};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::{
+    atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
+    Arc, Mutex, RwLock,
+};
 
 pub struct Server {
     config: Arc<Config>,
@@ -96,7 +100,6 @@ pub async fn apply_heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) 
             term,
             committed,
         } => raft.vote(leader, committed, term),
-        _ => return Err(RaftError::TypeErr),
     }
 }
 
@@ -139,11 +142,16 @@ impl RaftServer {
 }
 
 pub async fn apply_log(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) -> RaftResult<()> {
-    let (raft_id, entry) = InternalEntry::decode_stream(&mut stream).await?;
+    let (raft_id, entry) = Entry::decode_stream(&mut stream).await?;
     let raft = match rs.rafts.read().unwrap().get(&raft_id) {
         Some(v) => v.clone(),
         None => return Err(RaftError::RaftNotFound(raft_id)),
     };
 
-    panic!()
+    if let Entry::Apply { term, index } = &entry {
+        raft.apply.store(*index, SeqCst);
+        return Ok(());
+    };
+
+    raft.store.commit(entry)
 }
