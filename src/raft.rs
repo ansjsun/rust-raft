@@ -1,5 +1,5 @@
 use crate::state_machine::CommondType;
-use crate::state_machine::Resolver;
+use crate::state_machine::{Resolver, StateMachine};
 use crate::storage::RaftLog;
 use crate::{entity::*, error::*, sender::Sender};
 use log::error;
@@ -20,8 +20,9 @@ pub struct Raft {
     last_heart: AtomicU64,
     raft_log: RaftLog,
     store: RaftLog,
-    replicas: Vec<u64>,
+    pub replicas: Vec<u64>,
     pub resolver: Arc<dyn Resolver + Sync + Send + 'static>,
+    sm: Arc<dyn StateMachine + Sync + Send>,
 }
 
 impl Raft {
@@ -39,46 +40,21 @@ impl Raft {
             commond: cmd,
         };
 
-        //if here unwrap fail , may be program have a bug
         let data = Arc::new(entry.encode());
         self.store.save(entry)?;
 
-        let raft = self.clone();
+        Sender::send_log(self.clone(), &data)?;
 
-        let len = raft.replicas.len();
+        if let Some(Entry::Log {
+            term,
+            index,
+            commond,
+        }) = self.store.log_mem.read().unwrap().get(index + 1)
+        {
+            return self.sm.apply(term, index, commond);
+        };
 
-        let (mut tx, mut rx) = mpsc::channel(len);
-        smol::run(async {
-            for i in 0..len {
-                let entry = data.clone();
-                let raft = self.clone();
-                let node_id = self.replicas[i];
-                let mut tx = tx.clone();
-                smol::Task::spawn(async move {
-                    let _ = tx.try_send(Sender::send_log(node_id, raft, entry).await);
-                })
-                .detach();
-            }
-
-            let mut need = len / 2;
-
-            while let Some(res) = rx.recv().await {
-                match res {
-                    Err(e) => error!("submit log has err:[{:?}]", e),
-                    Ok(v) => {
-                        need -= 1;
-                        if need == 0 {
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-
-            Err(RaftError::NotEnoughRecipient(
-                len as u16 / 2,
-                (len / 2 - need) as u16,
-            ))
-        })
+        panic!("impossible")
     }
 
     // use this function make sure raft is follower

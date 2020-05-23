@@ -1,6 +1,5 @@
 use crate::entity::*;
 use crate::error::*;
-use crate::state_machine::StateMachine;
 use std::collections::VecDeque;
 use std::fs;
 use std::io;
@@ -15,19 +14,14 @@ const MEM_CAPACITY: usize = 20000;
 pub struct RaftLog {
     id: u64,
     conf: Arc<Config>,
-    log_mem: RwLock<LogMem>,
+    pub log_mem: RwLock<LogMem>,
     log_file: RwLock<LogFile>,
-    sm: Arc<dyn StateMachine + Sync + Send>,
 }
 
 impl RaftLog {
     //give a dir to found file index and max index id for Log file
     //file id start from 1
-    pub fn new(
-        id: u64,
-        conf: Arc<Config>,
-        sm: Arc<dyn StateMachine + Sync + Send>,
-    ) -> RaftResult<Self> {
+    pub fn new(id: u64, conf: Arc<Config>) -> RaftResult<Self> {
         let dir = Path::new(&conf.log_path).join(format!("{}", id));
 
         if !dir.exists() {
@@ -93,7 +87,6 @@ impl RaftLog {
             conf: conf,
             log_mem: RwLock::new(log_mem),
             log_file: RwLock::new(log_file),
-            sm: sm,
         })
     }
 
@@ -156,7 +149,7 @@ impl RaftLog {
     }
 }
 
-struct LogMem {
+pub struct LogMem {
     offset: u64,
     term: u64,
     committed: u64,
@@ -175,6 +168,10 @@ impl LogMem {
             applied: index,
             mem_len: 0,
         };
+    }
+
+    pub fn get(&self, index: u64) -> Option<&Entry> {
+        return self.queue.get((index - self.offset) as usize);
     }
 }
 

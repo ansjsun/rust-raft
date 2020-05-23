@@ -9,7 +9,7 @@ pub enum CommondType {
 }
 
 pub trait StateMachine {
-    fn apply(&self, command: &[u8], index: u64) -> RaftResult<()>;
+    fn apply(&self, term: &u64, index: &u64, command: &[u8]) -> RaftResult<()>;
     fn apply_member_change(&self, t: CommondType, index: u64) -> RaftResult<()>;
     fn apply_leader_change(&self, leader: u64, index: u64) -> RaftResult<()>;
 }

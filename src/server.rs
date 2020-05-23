@@ -1,5 +1,9 @@
-use crate::raft_server::RaftServer;
-use crate::{entity::*, error::*, raft::Raft};
+use crate::{
+    entity::*,
+    error::*,
+    raft::Raft,
+    state_machine::{DefResolver, Resolver},
+};
 
 use log::{error, info};
 use smol::{Async, Task};
@@ -9,15 +13,15 @@ use std::net::{TcpListener, TcpStream};
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
-pub struct TransportServer {
+pub struct Server {
     config: Arc<Config>,
     raft_server: Arc<RaftServer>,
 }
 
-impl TransportServer {
+impl Server {
     pub fn new(conf: Config) -> Self {
         let conf = Arc::new(conf);
-        TransportServer {
+        Server {
             config: conf.clone(),
             raft_server: Arc::new(RaftServer::new(conf.clone())),
         }
@@ -93,6 +97,44 @@ pub async fn apply_heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) 
             committed,
         } => raft.vote(leader, committed, term),
         _ => return Err(RaftError::TypeErr),
+    }
+}
+
+pub struct RaftServer {
+    pub config: Arc<Config>,
+    pub rafts: RwLock<HashMap<u64, Arc<Raft>>>,
+    pub resolver: Arc<Resolver + Sync + Send>,
+}
+
+impl RaftServer {
+    fn new(conf: Arc<Config>) -> Self {
+        RaftServer {
+            config: conf,
+            rafts: RwLock::new(HashMap::new()),
+            resolver: Arc::new(DefResolver::new()),
+        }
+    }
+
+    fn stop(&self) -> RaftResult<()> {
+        panic!()
+    }
+
+    fn create_raft(&self, id: u64) -> RaftResult<Arc<Raft>> {
+        panic!()
+    }
+
+    fn remove_raft(&self, id: u64) -> RaftResult<()> {
+        match self.rafts.write().unwrap().remove(&id) {
+            Some(_) => Ok(()),
+            None => Err(RaftError::RaftNotFound(id)),
+        }
+    }
+
+    fn get_raft(&self, id: u64) -> RaftResult<Arc<Raft>> {
+        match self.rafts.write().unwrap().remove(&id) {
+            Some(r) => Ok(r),
+            None => Err(RaftError::RaftNotFound(id)),
+        }
     }
 }
 
