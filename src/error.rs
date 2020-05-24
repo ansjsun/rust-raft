@@ -42,7 +42,7 @@ impl RaftError {
         panic!()
     }
 
-    pub fn decode(data: Vec<u8>) -> Self {
+    pub fn decode(_data: Vec<u8>) -> Self {
         panic!()
     }
 }

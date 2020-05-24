@@ -1,7 +1,5 @@
 use crate::error::{conver, RaftError, RaftResult};
 use futures_util::io::AsyncReadExt;
-use std::collections::HashMap;
-use std::sync::RwLock;
 
 pub trait Decode {
     type Item;
@@ -19,7 +17,17 @@ pub mod entry_type {
     pub const APPLY: u8 = 2;
 }
 
-pub enum InternalEntry {
+#[derive(Debug)]
+pub enum Entry {
+    Commit {
+        term: u64,
+        index: u64,
+        commond: Vec<u8>,
+    },
+    Apply {
+        term: u64,
+        index: u64,
+    },
     Heartbeat {
         term: u64,
         leader: u64,
@@ -30,18 +38,6 @@ pub enum InternalEntry {
         term: u64,
         leader: u64,
         committed: u64,
-    },
-}
-
-pub enum Entry {
-    Commit {
-        term: u64,
-        index: u64,
-        commond: Vec<u8>,
-    },
-    Apply {
-        term: u64,
-        index: u64,
     },
 }
 
@@ -56,17 +52,27 @@ fn read_u64_slice(s: &[u8], start: usize) -> u64 {
     u64::from_be_bytes(unsafe { *ptr })
 }
 
-impl Decode for InternalEntry {
+impl Decode for Entry {
     type Item = Self;
+    #[warn(unreachable_patterns)]
     fn decode(buf: Vec<u8>) -> RaftResult<Self::Item> {
         let entry = match buf[0] {
-            entry_type::HEARTBEAT => InternalEntry::Heartbeat {
+            entry_type::HEARTBEAT => Entry::Heartbeat {
                 term: read_u64_slice(&buf, 1),
                 leader: read_u64_slice(&buf, 9),
                 committed: read_u64_slice(&buf, 17),
                 applied: read_u64_slice(&buf, 25),
             },
-            entry_type::VOTE => InternalEntry::Vote {
+            entry_type::COMMIT => Entry::Commit {
+                term: read_u64_slice(&buf, 1),
+                index: read_u64_slice(&buf, 9),
+                commond: buf,
+            },
+            entry_type::APPLY => Entry::Apply {
+                term: read_u64_slice(&buf, 1),
+                index: read_u64_slice(&buf, 9),
+            },
+            entry_type::VOTE => Entry::Vote {
                 term: read_u64_slice(&buf, 1),
                 leader: read_u64_slice(&buf, 9),
                 committed: read_u64_slice(&buf, 17),
@@ -77,11 +83,11 @@ impl Decode for InternalEntry {
     }
 }
 
-impl Encode for InternalEntry {
+impl Encode for Entry {
     fn encode(&self) -> Vec<u8> {
-        let mut vec;
-        match self {
-            InternalEntry::Heartbeat {
+        let mut vec: Vec<u8>;
+        match &self {
+            Entry::Heartbeat {
                 term,
                 leader,
                 committed,
@@ -94,55 +100,6 @@ impl Encode for InternalEntry {
                 vec.extend_from_slice(&u64::to_be_bytes(*committed));
                 vec.extend_from_slice(&u64::to_be_bytes(*applied));
             }
-            InternalEntry::Vote {
-                term,
-                leader,
-                committed,
-            } => {
-                vec = Vec::with_capacity(25);
-                vec.push(entry_type::VOTE);
-                vec.extend_from_slice(&u64::to_be_bytes(*term));
-                vec.extend_from_slice(&u64::to_be_bytes(*leader));
-                vec.extend_from_slice(&u64::to_be_bytes(*committed));
-            }
-        }
-        vec
-    }
-}
-
-impl InternalEntry {
-    pub async fn decode_stream<S: AsyncReadExt + Unpin>(mut stream: S) -> RaftResult<(u64, Self)> {
-        let raft_id = read_u64(&mut stream).await?;
-        let mut buf = Vec::default();
-        conver(stream.read_to_end(&mut buf).await)?;
-
-        Ok((raft_id, Self::decode(buf)?))
-    }
-}
-
-impl Decode for Entry {
-    type Item = Self;
-    fn decode(buf: Vec<u8>) -> RaftResult<Self::Item> {
-        let entry = match buf[0] {
-            entry_type::COMMIT => Entry::Commit {
-                term: read_u64_slice(&buf, 1),
-                index: read_u64_slice(&buf, 9),
-                commond: buf,
-            },
-            entry_type::APPLY => Entry::Apply {
-                term: read_u64_slice(&buf, 1),
-                index: read_u64_slice(&buf, 9),
-            },
-            _ => return Err(RaftError::TypeErr),
-        };
-        Ok(entry)
-    }
-}
-
-impl Encode for Entry {
-    fn encode(&self) -> Vec<u8> {
-        let mut vec: Vec<u8>;
-        match &self {
             Entry::Commit {
                 term,
                 index,
@@ -160,6 +117,17 @@ impl Encode for Entry {
                 vec.extend_from_slice(&u64::to_be_bytes(*term));
                 vec.extend_from_slice(&u64::to_be_bytes(*index));
             }
+            Entry::Vote {
+                term,
+                leader,
+                committed,
+            } => {
+                vec = Vec::with_capacity(25);
+                vec.push(entry_type::VOTE);
+                vec.extend_from_slice(&u64::to_be_bytes(*term));
+                vec.extend_from_slice(&u64::to_be_bytes(*leader));
+                vec.extend_from_slice(&u64::to_be_bytes(*committed));
+            }
         }
         vec
     }
@@ -175,6 +143,12 @@ impl Entry {
                 ..
             } => (*term, *index, 17 + commond.len() as u64),
             Entry::Apply { term, index } => (*term, *index, 17),
+            Entry::Heartbeat {
+                term, committed, ..
+            } => (*term, *committed, 33),
+            Entry::Vote {
+                term, committed, ..
+            } => (*term, *committed, 33),
         }
     }
 
@@ -193,6 +167,7 @@ pub struct Config {
     pub log_path: String,
     // how size of MB for file
     pub log_size_m: u64,
+    //Three  without a heartbeat , follower to begin consecutive elections
     pub heartbeate_ms: u64,
 }
 
@@ -200,5 +175,5 @@ pub enum RaftState {
     //leader id
     Follower,
     Leader,
-    Candidate { num_votes: u32 },
+    Candidate,
 }

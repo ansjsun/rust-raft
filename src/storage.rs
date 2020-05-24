@@ -96,6 +96,10 @@ impl RaftLog {
         (mem.term, mem.committed, mem.applied)
     }
 
+    pub fn last_index(&self) -> u64 {
+        self.log_mem.read().unwrap().committed
+    }
+
     pub fn commit(&self, e: Entry) -> RaftResult<()> {
         let mut mem = self.log_mem.write().unwrap();
         let (term, index, len) = e.info();
@@ -173,13 +177,6 @@ impl LogMem {
 
     pub fn get(&self, index: u64) -> Option<&Entry> {
         return self.queue.get((index - self.offset - 1) as usize);
-    }
-
-    pub fn last_index(&self) -> u64 {
-        if self.queue.len() > 0 {
-            return self.queue.len() as u64 + self.offset + 1;
-        }
-        return self.offset;
     }
 }
 

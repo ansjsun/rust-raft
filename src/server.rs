@@ -1,16 +1,10 @@
 use crate::{entity::*, error::*, raft::Raft, state_machine::*};
 
-use crate::storage::RaftLog;
 use log::{error, info};
 use smol::{Async, Task};
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::net::{TcpListener, TcpStream};
-use std::pin::Pin;
-use std::sync::{
-    atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
-    Arc, Mutex, RwLock,
-};
+use std::sync::{Arc, RwLock};
 
 pub struct Server {
     conf: Arc<Config>,
@@ -57,7 +51,7 @@ impl Server {
                     match listener.accept().await {
                         Ok((stream, _)) => {
                             let rs = rs.clone();
-                            Task::spawn(apply_log(rs, stream)).unwrap().detach();
+                            Task::spawn(log(rs, stream)).unwrap().detach();
                         }
                         Err(e) => error!("listener has err:{}", e.to_string()),
                     }
@@ -79,35 +73,13 @@ impl Server {
                     let rs = rs.clone();
                     match listener.accept().await {
                         Ok((stream, _)) => {
-                            Task::spawn(apply_heartbeat(rs, stream)).unwrap().detach();
+                            Task::spawn(heartbeat(rs, stream)).unwrap().detach();
                         }
                         Err(e) => error!("listener has err:{}", e.to_string()),
                     }
                 }
             })
         })
-    }
-}
-
-pub async fn apply_heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) -> RaftResult<()> {
-    let (raft_id, entry) = InternalEntry::decode_stream(&mut stream).await?;
-    let raft = match rs.rafts.read().unwrap().get(&raft_id) {
-        Some(v) => v.clone(),
-        None => return Err(RaftError::RaftNotFound(raft_id)),
-    };
-
-    match entry {
-        InternalEntry::Heartbeat {
-            term,
-            leader,
-            committed,
-            applied,
-        } => raft.heartbeat(term, leader, committed, applied),
-        InternalEntry::Vote {
-            leader,
-            term,
-            committed,
-        } => raft.vote(leader, committed, term),
     }
 }
 
@@ -179,18 +151,45 @@ impl RaftServer {
     }
 }
 
-pub async fn apply_log(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) -> RaftResult<()> {
+pub async fn heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) -> RaftResult<()> {
     let (raft_id, entry) = Entry::decode_stream(&mut stream).await?;
     let raft = match rs.rafts.read().unwrap().get(&raft_id) {
         Some(v) => v.clone(),
         None => return Err(RaftError::RaftNotFound(raft_id)),
     };
 
-    if let Entry::Apply { term, index } = &entry {
-        raft.check_apply(*term, *index)?;
-        raft.apply.store(*index, SeqCst);
-        return Ok(());
+    match entry {
+        Entry::Heartbeat {
+            term,
+            leader,
+            committed,
+            applied,
+        } => raft.heartbeat(term, leader, committed, applied),
+        _ => {
+            error!("err heartbeat type {:?}", entry);
+            Err(RaftError::TypeErr)
+        }
+    }
+}
+
+pub async fn log(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) -> RaftResult<()> {
+    let (raft_id, entry) = Entry::decode_stream(&mut stream).await?;
+    let raft = match rs.rafts.read().unwrap().get(&raft_id) {
+        Some(v) => v.clone(),
+        None => return Err(RaftError::RaftNotFound(raft_id)),
     };
 
-    raft.store.commit(entry)
+    match &entry {
+        Entry::Commit { .. } => raft.store.commit(entry),
+        Entry::Apply { term, index } => raft.update_apply(*term, *index),
+        Entry::Vote {
+            leader,
+            term,
+            committed,
+        } => raft.vote(*leader, *term, *committed),
+        _ => {
+            error!("err heartbeat type {:?}", entry);
+            Err(RaftError::TypeErr)
+        }
+    }
 }

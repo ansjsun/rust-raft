@@ -1,6 +1,6 @@
-use crate::{entity::*, error::*};
+use crate::error::*;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 pub enum CommondType {
     Data,
