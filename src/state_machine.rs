@@ -1,12 +1,15 @@
 use crate::{entity::*, error::*};
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 pub enum CommondType {
     Data,
     AddNode,
     RemoveNode,
 }
+
+pub type RSL = Arc<Box<dyn Resolver + Sync + Send + 'static>>;
+pub type SM = Arc<Box<dyn StateMachine + Sync + Send + 'static>>;
 
 pub trait StateMachine {
     fn apply(&self, term: &u64, index: &u64, command: &[u8]) -> RaftResult<()>;

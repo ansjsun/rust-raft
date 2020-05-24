@@ -151,7 +151,7 @@ impl RaftLog {
 }
 
 pub struct LogMem {
-    offset: u64,
+    pub offset: u64,
     term: u64,
     committed: u64,
     applied: u64,
@@ -172,7 +172,14 @@ impl LogMem {
     }
 
     pub fn get(&self, index: u64) -> Option<&Entry> {
-        return self.queue.get((index - self.offset) as usize);
+        return self.queue.get((index - self.offset - 1) as usize);
+    }
+
+    pub fn last_index(&self) -> u64 {
+        if self.queue.len() > 0 {
+            return self.queue.len() as u64 + self.offset + 1;
+        }
+        return self.offset;
     }
 }
 

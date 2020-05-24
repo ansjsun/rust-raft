@@ -15,8 +15,8 @@ pub trait Encode {
 pub mod entry_type {
     pub const HEARTBEAT: u8 = 0;
     pub const VOTE: u8 = 1;
-    pub const Commit: u8 = 2;
-    pub const Apply: u8 = 2;
+    pub const COMMIT: u8 = 2;
+    pub const APPLY: u8 = 2;
 }
 
 pub enum InternalEntry {
@@ -113,12 +113,12 @@ impl Decode for Entry {
     type Item = Self;
     fn decode(buf: Vec<u8>) -> RaftResult<Self::Item> {
         let entry = match buf[0] {
-            entry_type::Commit => Entry::Commit {
+            entry_type::COMMIT => Entry::Commit {
                 term: read_u64_slice(&buf, 1),
                 index: read_u64_slice(&buf, 9),
                 commond: buf,
             },
-            entry_type::Apply => Entry::Apply {
+            entry_type::APPLY => Entry::Apply {
                 term: read_u64_slice(&buf, 1),
                 index: read_u64_slice(&buf, 9),
             },
@@ -138,14 +138,14 @@ impl Encode for Entry {
                 commond,
             } => {
                 vec = Vec::with_capacity(17 + commond.len());
-                vec.push(entry_type::Commit);
+                vec.push(entry_type::COMMIT);
                 vec.extend_from_slice(&u64::to_be_bytes(*term));
                 vec.extend_from_slice(&u64::to_be_bytes(*index));
                 vec.extend_from_slice(commond);
             }
             Entry::Apply { term, index } => {
                 vec = Vec::with_capacity(17);
-                vec.push(entry_type::Apply);
+                vec.push(entry_type::APPLY);
                 vec.extend_from_slice(&u64::to_be_bytes(*term));
                 vec.extend_from_slice(&u64::to_be_bytes(*index));
             }

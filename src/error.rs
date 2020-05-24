@@ -12,6 +12,8 @@ pub enum RaftError {
     NotfoundAddr(u64),
     #[error("term less than target machine")]
     TermLess,
+    #[error("term greater than target machine")]
+    TermGreater,
     #[error("index:{0} less than target machine ")]
     IndexLess(u64),
     #[error("vote not allow")]

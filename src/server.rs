@@ -1,15 +1,10 @@
-use crate::{
-    entity::*,
-    error::*,
-    raft::Raft,
-    state_machine::{DefResolver, Resolver},
-};
+use crate::{entity::*, error::*, raft::Raft, state_machine::*};
 
 use crate::storage::RaftLog;
 use log::{error, info};
 use smol::{Async, Task};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{TcpListener, TcpStream};
 use std::pin::Pin;
 use std::sync::{
@@ -18,23 +13,31 @@ use std::sync::{
 };
 
 pub struct Server {
-    config: Arc<Config>,
+    conf: Arc<Config>,
     raft_server: Arc<RaftServer>,
 }
 
 impl Server {
-    pub fn new(conf: Config) -> Self {
+    pub fn new<R, S>(conf: Config, resolver: R, sm: S) -> Self
+    where
+        R: Resolver + Sync + Send + 'static,
+        S: StateMachine + Sync + Send + 'static,
+    {
         let conf = Arc::new(conf);
         Server {
-            config: conf.clone(),
-            raft_server: Arc::new(RaftServer::new(conf.clone())),
+            conf: conf.clone(),
+            raft_server: Arc::new(RaftServer::new(
+                conf.clone(),
+                Arc::new(Box::new(resolver)),
+                Arc::new(Box::new(sm)),
+            )),
         }
     }
 
     pub fn start(&self) -> RaftResult<()> {
         let mut threads = Vec::new();
-        threads.push(self._start_heartbeat(self.config.heartbeat_port));
-        // threads.push(self._start_replicate(self.config.replicate_port));
+        threads.push(self._start_heartbeat(self.conf.heartbeat_port));
+        threads.push(self._start_replicate(self.conf.replicate_port));
         for t in threads {
             t.join().unwrap()?;
         }
@@ -104,17 +107,19 @@ pub async fn apply_heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) 
 }
 
 pub struct RaftServer {
-    pub config: Arc<Config>,
+    pub conf: Arc<Config>,
     pub rafts: RwLock<HashMap<u64, Arc<Raft>>>,
-    pub resolver: Arc<Resolver + Sync + Send>,
+    pub resolver: RSL,
+    sm: SM,
 }
 
 impl RaftServer {
-    fn new(conf: Arc<Config>) -> Self {
+    fn new(conf: Arc<Config>, resolver: RSL, sm: SM) -> Self {
         RaftServer {
-            config: conf,
+            conf: conf,
             rafts: RwLock::new(HashMap::new()),
-            resolver: Arc::new(DefResolver::new()),
+            resolver: resolver,
+            sm: sm,
         }
     }
 
@@ -122,8 +127,32 @@ impl RaftServer {
         panic!()
     }
 
-    fn create_raft(&self, id: u64) -> RaftResult<Arc<Raft>> {
-        panic!()
+    // If the leader is 0, the default discovery leader
+    // when you fist create raft you can specify a leader to quickly form a raft group
+    // replicas not have node_id , if have , it will remove the node id in replicas
+    pub fn create_raft(&self, id: u64, leader: u64, replicas: &Vec<u64>) -> RaftResult<Arc<Raft>> {
+        let mut set = HashSet::new();
+        set.insert(self.conf.node_id);
+        let rep = replicas
+            .iter()
+            .map(|x| *x)
+            .filter(|x| {
+                if set.contains(x) {
+                    false
+                } else {
+                    set.insert(*x);
+                    true
+                }
+            })
+            .collect();
+
+        Ok(Arc::new(Raft::new(
+            id,
+            self.conf.clone(),
+            rep,
+            self.resolver.clone(),
+            self.sm.clone(),
+        )?))
     }
 
     fn remove_raft(&self, id: u64) -> RaftResult<()> {
@@ -149,6 +178,7 @@ pub async fn apply_log(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) -> Raf
     };
 
     if let Entry::Apply { term, index } = &entry {
+        raft.check_apply(*term, *index)?;
         raft.apply.store(*index, SeqCst);
         return Ok(());
     };

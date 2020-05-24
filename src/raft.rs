@@ -1,8 +1,9 @@
 use crate::state_machine::CommondType;
-use crate::state_machine::{Resolver, StateMachine};
+use crate::state_machine::{Resolver, StateMachine, RSL, SM};
 use crate::storage::RaftLog;
 use crate::{entity::*, error::*, sender::Sender};
 use log::error;
+use std::marker::Sized;
 use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
     Arc, Mutex,
@@ -17,15 +18,37 @@ pub struct Raft {
     voted: Mutex<u64>,
     leader: AtomicU64,
     pub apply: AtomicU64,
-    election_elapsed: AtomicUsize,
     last_heart: AtomicU64,
     pub store: RaftLog,
     pub replicas: Vec<u64>,
-    pub resolver: Arc<dyn Resolver + Sync + Send + 'static>,
-    sm: Arc<dyn StateMachine + Sync + Send>,
+    pub resolver: RSL,
+    sm: SM,
 }
 
 impl Raft {
+    pub fn new(
+        id: u64,
+        conf: Arc<Config>,
+        replicas: Vec<u64>,
+        resolver: RSL,
+        sm: SM,
+    ) -> RaftResult<Self> {
+        Ok(Raft {
+            id: id,
+            conf: conf.clone(),
+            state: RaftState::Follower,
+            term: AtomicU64::new(0),
+            voted: Mutex::new(0),
+            leader: AtomicU64::new(0),
+            apply: AtomicU64::new(0),
+            last_heart: AtomicU64::new(crate::current_millis()),
+            store: RaftLog::new(id, conf)?,
+            replicas: replicas,
+            resolver: resolver,
+            sm: sm,
+        })
+    }
+
     //this function only call by leader
     pub fn submit(self: Arc<Raft>, cmd: Vec<u8>) -> RaftResult<()> {
         if !self.is_leader() {
@@ -66,7 +89,6 @@ impl Raft {
             self.term.store(term, SeqCst);
         }
         self.leader.store(leader, SeqCst);
-        self.election_elapsed.store(0, SeqCst);
         return Ok(());
     }
 
@@ -108,5 +130,25 @@ impl Raft {
 
     pub fn recive_message<C: AsRef<[u8]>>(&self, commd: C) -> RaftResult<bool> {
         panic!()
+    }
+
+    pub fn check_apply(&self, term: u64, index: u64) -> RaftResult<()> {
+        if self.store.log_mem.read().unwrap().offset >= index {
+            return Ok(());
+        }
+
+        if let Some(Entry::Commit { term: t, .. }) = self.store.log_mem.read().unwrap().get(index) {
+            if *t == term {
+                return Ok(());
+            } else if *t < term {
+                return Err(RaftError::TermLess);
+            } else {
+                return Err(RaftError::TermGreater);
+            }
+        };
+
+        return Err(RaftError::IndexLess(
+            self.store.log_mem.read().unwrap().last_index(),
+        ));
     }
 }
