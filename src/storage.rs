@@ -91,9 +91,9 @@ impl RaftLog {
         })
     }
 
-    pub fn info(&self) -> (u64, u64) {
+    pub fn info(&self) -> (u64, u64, u64) {
         let mem = self.log_mem.read().unwrap();
-        (mem.term, mem.committed)
+        (mem.term, mem.committed, mem.applied)
     }
 
     pub fn commit(&self, e: Entry) -> RaftResult<()> {

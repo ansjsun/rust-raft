@@ -14,7 +14,11 @@ use tokio::sync::mpsc;
 pub struct Sender {}
 
 impl Sender {
-    pub fn send_log(raft: Arc<Raft>, data: &Arc<Vec<u8>>) -> RaftResult<()> {
+    pub fn send<E: Encode>(raft: Arc<Raft>, entry: &E) -> RaftResult<()> {
+        panic!()
+    }
+
+    fn send_log(raft: Arc<Raft>, data: &Arc<Vec<u8>>) -> RaftResult<()> {
         let len = raft.replicas.len();
 
         let (tx, mut rx) = mpsc::channel(len);

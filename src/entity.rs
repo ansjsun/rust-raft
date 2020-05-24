@@ -23,6 +23,8 @@ pub enum InternalEntry {
     Heartbeat {
         term: u64,
         leader: u64,
+        committed: u64,
+        applied: u64,
     },
     Vote {
         term: u64,
@@ -61,6 +63,8 @@ impl Decode for InternalEntry {
             entry_type::HEARTBEAT => InternalEntry::Heartbeat {
                 term: read_u64_slice(&buf, 1),
                 leader: read_u64_slice(&buf, 9),
+                committed: read_u64_slice(&buf, 17),
+                applied: read_u64_slice(&buf, 25),
             },
             entry_type::VOTE => InternalEntry::Vote {
                 term: read_u64_slice(&buf, 1),
@@ -77,11 +81,18 @@ impl Encode for InternalEntry {
     fn encode(&self) -> Vec<u8> {
         let mut vec;
         match self {
-            InternalEntry::Heartbeat { term, leader } => {
+            InternalEntry::Heartbeat {
+                term,
+                leader,
+                committed,
+                applied,
+            } => {
                 vec = Vec::with_capacity(17);
                 vec.push(entry_type::HEARTBEAT);
                 vec.extend_from_slice(&u64::to_be_bytes(*term));
                 vec.extend_from_slice(&u64::to_be_bytes(*leader));
+                vec.extend_from_slice(&u64::to_be_bytes(*committed));
+                vec.extend_from_slice(&u64::to_be_bytes(*applied));
             }
             InternalEntry::Vote {
                 term,
@@ -182,6 +193,7 @@ pub struct Config {
     pub log_path: String,
     // how size of MB for file
     pub log_size_m: u64,
+    pub heartbeate_ms: u64,
 }
 
 pub enum RaftState {

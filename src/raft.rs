@@ -2,18 +2,19 @@ use crate::state_machine::CommondType;
 use crate::state_machine::{Resolver, StateMachine, RSL, SM};
 use crate::storage::RaftLog;
 use crate::{entity::*, error::*, sender::Sender};
-use log::error;
+use log::{error, info};
 use std::marker::Sized;
 use std::sync::{
-    atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
-    Arc, Mutex,
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst},
+    Arc, Mutex, RWLock,
 };
 use tokio::sync::mpsc;
 
 pub struct Raft {
     id: u64,
     conf: Arc<Config>,
-    state: RaftState,
+    state: RWLock<RaftState>,
+    stopd: AtomicBool,
     term: AtomicU64,
     voted: Mutex<u64>,
     leader: AtomicU64,
@@ -37,6 +38,7 @@ impl Raft {
             id: id,
             conf: conf.clone(),
             state: RaftState::Follower,
+            stopd: AtomicBool::new(false),
             term: AtomicU64::new(0),
             voted: Mutex::new(0),
             leader: AtomicU64::new(0),
@@ -55,7 +57,7 @@ impl Raft {
             return Err(RaftError::NotLeader(self.leader.load(SeqCst)));
         }
 
-        let (term, index) = self.store.info();
+        let (term, index, _) = self.store.info();
 
         let entry = Entry::Commit {
             term: term,
@@ -63,25 +65,31 @@ impl Raft {
             commond: cmd,
         };
 
-        let data = Arc::new(entry.encode());
         self.store.commit(entry)?;
 
-        Sender::send_log(self.clone(), &data)?;
-
-        if let Some(Entry::Commit {
-            term,
-            index,
-            commond,
-        }) = self.store.log_mem.read().unwrap().get(index + 1)
-        {
-            return self.sm.apply(term, index, commond);
+        if let Some(e) = self.store.log_mem.read().unwrap().get(index + 1) {
+            Sender::send(self.clone(), e)?;
+            if let Entry::Commit {
+                term,
+                index,
+                commond,
+            } = e
+            {
+                return self.sm.apply(term, index, commond);
+            };
         };
 
         panic!("impossible")
     }
 
     // use this function make sure raft is follower
-    pub fn heartbeat(&self, leader: u64, term: u64) -> RaftResult<()> {
+    pub fn heartbeat(
+        &self,
+        term: u64,
+        leader: u64,
+        committed: u64,
+        applied: u64,
+    ) -> RaftResult<()> {
         let self_term = self.term.load(SeqCst);
         if self_term > term {
             return Err(RaftError::TermLess);
@@ -128,10 +136,6 @@ impl Raft {
         panic!()
     }
 
-    pub fn recive_message<C: AsRef<[u8]>>(&self, commd: C) -> RaftResult<bool> {
-        panic!()
-    }
-
     pub fn check_apply(&self, term: u64, index: u64) -> RaftResult<()> {
         if self.store.log_mem.read().unwrap().offset >= index {
             return Ok(());
@@ -150,5 +154,45 @@ impl Raft {
         return Err(RaftError::IndexLess(
             self.store.log_mem.read().unwrap().last_index(),
         ));
+    }
+}
+
+impl Raft {
+    pub fn start(raft: Arc<Raft>) {
+        while !raft.stopd.load(SeqCst) {
+            if raft.is_leader() {
+                let (_, committed, applied) = raft.store.info();
+
+                let ie = InternalEntry::Heartbeat {
+                    term: raft.term.load(SeqCst),
+                    leader: raft.id,
+                    committed: committed,
+                    applied: applied,
+                };
+                if let Err(e) = Sender::send(raft.clone(), &ie) {
+                    error!("send heartbeat has err:{:?}", e);
+                }
+            } else if raft.is_follower() {
+                if crate::current_millis() - raft.last_heart.load(SeqCst)
+                    > raft.conf.heartbeate_ms * 2
+                {
+                    info!("{} to long time recive heartbeat , try to leader", raft.id);
+                    raft.to_voter();
+                }
+            }
+        }
+    }
+
+    pub fn to_leader(&self) {}
+
+    pub fn to_follower(&self) {}
+
+    pub fn to_voter(&self) {
+        rand::random::<u64>();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let vote = self.voted.lock().unwrap();
+        let state = self.state.write().unwrap();
+        *state = RaftState::Candidate { num_votes: 1 };
+        *vote = self.id;
     }
 }

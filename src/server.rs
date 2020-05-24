@@ -97,7 +97,12 @@ pub async fn apply_heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) 
     };
 
     match entry {
-        InternalEntry::Heartbeat { leader, term } => raft.heartbeat(leader, term),
+        InternalEntry::Heartbeat {
+            term,
+            leader,
+            committed,
+            applied,
+        } => raft.heartbeat(term, leader, committed, applied),
         InternalEntry::Vote {
             leader,
             term,
@@ -146,13 +151,17 @@ impl RaftServer {
             })
             .collect();
 
-        Ok(Arc::new(Raft::new(
+        let raft = Arc::new(Raft::new(
             id,
             self.conf.clone(),
             rep,
             self.resolver.clone(),
             self.sm.clone(),
-        )?))
+        )?);
+
+        Raft::start(raft.clone());
+
+        Ok(raft)
     }
 
     fn remove_raft(&self, id: u64) -> RaftResult<()> {
