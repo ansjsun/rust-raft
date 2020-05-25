@@ -9,13 +9,13 @@ fn main() {
     let server3 = Arc::new(Server::new(make_config(3), make_resolver(), SM { id: 3 }));
 
     let server = server1.clone();
-    server.start().unwrap();
+    server.start();
 
     let server = server2.clone();
-    server.start().unwrap();
+    server.start();
 
-    let server = server3.clone();
-    server.start().unwrap();
+    // let server = server3.clone();
+    // server.start();
 
     let replicas = &vec![1, 2, 3];
 
