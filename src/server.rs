@@ -131,7 +131,7 @@ impl RaftServer {
             self.sm.clone(),
         )?);
 
-        Raft::start(raft.clone());
+        raft.start();
 
         Ok(raft)
     }

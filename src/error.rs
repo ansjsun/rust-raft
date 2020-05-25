@@ -28,6 +28,26 @@ pub enum RaftError {
     NotEnoughRecipient(u16, u16),
 }
 
+impl RaftError {
+    fn id(&self) -> u8 {
+        match self {
+            RaftError::Success => 0,
+            RaftError::Error(_) => 1,
+            RaftError::NetError(_) => 2,
+            RaftError::IOError(_) => 3,
+            RaftError::NotfoundAddr(_) => 4,
+            RaftError::TermLess => 5,
+            RaftError::TermGreater => 6,
+            RaftError::IndexLess(_) => 7,
+            RaftError::VoteNotAllow => 8,
+            RaftError::TypeErr => 9,
+            RaftError::RaftNotFound(_) => 10,
+            RaftError::NotLeader(_) => 11,
+            RaftError::NotEnoughRecipient(_, _) => 12,
+        }
+    }
+}
+
 pub type RaftResult<T> = std::result::Result<T, RaftError>;
 
 pub fn conver<T, E: ToString>(result: std::result::Result<T, E>) -> RaftResult<T> {
@@ -38,11 +58,71 @@ pub fn conver<T, E: ToString>(result: std::result::Result<T, E>) -> RaftResult<T
 }
 
 impl RaftError {
-    pub fn code(&self) -> Vec<u8> {
-        panic!()
+    pub fn encode(&self) -> Vec<u8> {
+        let mut result: Vec<u8>;
+        match self {
+            RaftError::Success
+            | RaftError::TermLess
+            | RaftError::TermGreater
+            | RaftError::VoteNotAllow
+            | RaftError::TypeErr => {
+                result = Vec::with_capacity(1);
+                result.push(self.id());
+            }
+            RaftError::Error(msg) | RaftError::NetError(msg) | RaftError::IOError(msg) => {
+                result = Vec::with_capacity(1 + msg.len());
+                result.push(self.id());
+                result.extend_from_slice(msg.as_str().as_bytes());
+            }
+            RaftError::NotfoundAddr(num)
+            | RaftError::IndexLess(num)
+            | RaftError::RaftNotFound(num)
+            | RaftError::NotLeader(num) => {
+                result = Vec::with_capacity(9);
+                result.push(self.id());
+                result.extend_from_slice(&u64::to_be_bytes(*num));
+            }
+            RaftError::NotEnoughRecipient(expect, got) => {
+                result = Vec::with_capacity(5);
+                result.push(12);
+                result.extend_from_slice(&u16::to_be_bytes(*expect));
+                result.extend_from_slice(&u16::to_be_bytes(*got));
+            }
+        }
+
+        result
     }
 
-    pub fn decode(_data: Vec<u8>) -> Self {
-        panic!()
+    pub fn decode(data: Vec<u8>) -> Self {
+        match data[0] {
+            0 => RaftError::Success,
+            1 => RaftError::Error(read_string(&data, 1)),
+            2 => RaftError::NetError(read_string(&data, 1)),
+            3 => RaftError::IOError(read_string(&data, 1)),
+            4 => RaftError::NotfoundAddr(read_u64_slice(&data, 1)),
+            5 => RaftError::TermLess,
+            6 => RaftError::TermGreater,
+            7 => RaftError::IndexLess(read_u64_slice(&data, 1)),
+            8 => RaftError::VoteNotAllow,
+            9 => RaftError::TypeErr,
+            10 => RaftError::RaftNotFound(read_u64_slice(&data, 1)),
+            11 => RaftError::NotLeader(read_u64_slice(&data, 1)),
+            12 => RaftError::NotEnoughRecipient(read_u16_slice(&data, 1), read_u16_slice(&data, 3)),
+            _ => panic!("not found"),
+        }
     }
+}
+
+fn read_string(data: &[u8], start: usize) -> String {
+    String::from_utf8_lossy(&data[start..]).to_string()
+}
+
+fn read_u64_slice(s: &[u8], start: usize) -> u64 {
+    let ptr = s[start..start + 8].as_ptr() as *const [u8; 8];
+    u64::from_be_bytes(unsafe { *ptr })
+}
+
+fn read_u16_slice(s: &[u8], start: usize) -> u16 {
+    let ptr = s[start..start + 2].as_ptr() as *const [u8; 2];
+    u16::from_be_bytes(unsafe { *ptr })
 }

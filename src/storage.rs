@@ -100,9 +100,13 @@ impl RaftLog {
         self.log_mem.read().unwrap().committed
     }
 
+    pub fn last_applied(&self) -> u64 {
+        self.log_mem.read().unwrap().applied
+    }
+
     pub fn commit(&self, e: Entry) -> RaftResult<()> {
         let mut mem = self.log_mem.write().unwrap();
-        let (term, index, len) = e.info();
+        let (term, index, _) = e.info();
         if mem.term > term {
             return Err(RaftError::TermLess);
         }
@@ -111,46 +115,47 @@ impl RaftLog {
             return Err(RaftError::IndexLess(mem.committed));
         } else if mem.committed + 1 > index {
             //Indicates that log conflicts need to be rolled back
-            let at = index - mem.offset - 1;
-            let _ = mem.queue.split_off(at as usize);
+            let new_len = (index - 1 - mem.offset) as usize;
+            unsafe { mem.logs.set_len(new_len) };
         }
 
         mem.committed = index;
         mem.term = index;
-        mem.queue.push_back(e);
+        mem.logs.push(e);
 
         Ok(())
     }
 
-    pub fn move_to_file(&self) -> RaftResult<()> {
-        {
+    //if this function has err ,Means that raft may not work anymore
+    // If an IO error, such as insufficient disk space, the data will be unclean. Or an unexpected error occurred
+    pub fn apply(&self, target_applied: u64) -> RaftResult<u64> {
+        let (bs, index) = {
             let mem = self.log_mem.read().unwrap();
-            let first = mem.queue.front();
-            let e = match first {
-                Some(e) => e,
-                None => return Ok(()),
-            };
-
-            let (_, index, len) = e.info();
-            if index > mem.applied {
-                return Ok(());
+            if mem.applied >= target_applied {
+                return Ok(0);
             }
-
-            let bs = e.encode();
-
-            let mut file = self.log_file.write().unwrap();
-
-            if let Err(err) = file.writer.write(&bs) {
-                return Err(RaftError::IOError(err.to_string()));
+            match mem.get(mem.applied + 1) {
+                Some(e) => {
+                    let (_, index, _) = e.info();
+                    (e.encode(), index)
+                }
+                None => return Ok(0),
             }
-            file.file_len += len;
+        };
+
+        let mut file = self.log_file.write().unwrap();
+
+        if let Err(err) = file.writer.write(&u32::to_be_bytes(bs.len() as u32)) {
+            return Err(RaftError::IOError(err.to_string()));
         }
 
-        {
-            self.log_mem.write().unwrap().queue.pop_front();
+        if let Err(err) = file.writer.write(&bs) {
+            return Err(RaftError::IOError(err.to_string()));
         }
 
-        Ok(())
+        self.log_mem.write().unwrap().applied = index;
+
+        Ok(index)
     }
 }
 
@@ -159,14 +164,14 @@ pub struct LogMem {
     term: u64,
     committed: u64,
     applied: u64,
-    queue: VecDeque<Entry>,
+    logs: Vec<Entry>,
     mem_len: u64,
 }
 
 impl LogMem {
     fn new(capacity: usize, index: u64) -> LogMem {
         return LogMem {
-            queue: VecDeque::with_capacity(capacity),
+            logs: Vec::with_capacity(capacity),
             offset: index,
             term: 0,
             committed: index,
@@ -176,7 +181,7 @@ impl LogMem {
     }
 
     pub fn get(&self, index: u64) -> Option<&Entry> {
-        return self.queue.get((index - self.offset - 1) as usize);
+        return self.logs.get((index - self.offset - 1) as usize);
     }
 }
 

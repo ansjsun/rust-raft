@@ -165,12 +165,15 @@ pub struct Config {
     pub heartbeat_port: u16,
     pub replicate_port: u16,
     pub log_path: String,
-    // how size of MB for file
-    pub log_size_m: u64,
+    // how size of num for memory
+    pub log_size_max: u64,
+    // how size of num for memory
+    pub log_size_min: u64,
     //Three  without a heartbeat , follower to begin consecutive elections
     pub heartbeate_ms: u64,
 }
 
+#[derive(Clone)]
 pub enum RaftState {
     //leader id
     Follower,
