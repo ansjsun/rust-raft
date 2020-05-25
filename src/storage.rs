@@ -1,6 +1,5 @@
 use crate::entity::*;
 use crate::error::*;
-use std::collections::VecDeque;
 use std::fs;
 use std::io;
 use std::io::prelude::*;
@@ -23,7 +22,6 @@ impl RaftLog {
     //file id start from 1
     pub fn new(id: u64, conf: Arc<Config>) -> RaftResult<Self> {
         let dir = Path::new(&conf.log_path).join(format!("{}", id));
-
         if !dir.exists() {
             conver(fs::create_dir_all(&dir))?;
         }
@@ -194,7 +192,15 @@ struct LogFile {
 impl LogFile {
     fn new(dir: PathBuf, file_id: u64, offset: u64) -> RaftResult<LogFile> {
         let file_path = dir.join(format!("{}{}{}", FILE_START, file_id, FILE_END));
-        let mut file = conver(fs::File::open(file_path))?;
+
+        let mut file = conver(
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .read(true)
+                .write(true)
+                .open(file_path),
+        )?;
         if offset > 0 {
             conver(file.seek(io::SeekFrom::Start(offset)))?;
         }

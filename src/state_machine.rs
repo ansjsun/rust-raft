@@ -2,6 +2,7 @@ use crate::error::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[derive(Debug)]
 pub enum CommondType {
     Data,
     AddNode,
@@ -13,8 +14,8 @@ pub type SM = Arc<Box<dyn StateMachine + Sync + Send + 'static>>;
 
 pub trait StateMachine {
     fn apply(&self, term: &u64, index: &u64, command: &[u8]) -> RaftResult<()>;
-    fn apply_member_change(&self, t: CommondType, index: u64) -> RaftResult<()>;
-    fn apply_leader_change(&self, leader: u64, index: u64) -> RaftResult<()>;
+    fn apply_member_change(&self, t: CommondType, index: u64);
+    fn apply_leader_change(&self, leader: u64, term: u64, index: u64);
 }
 
 pub trait Resolver {
@@ -51,7 +52,7 @@ impl DefResolver {
         };
     }
 
-    pub fn add_node(&mut self, node_id: u64, host: String, log_port: u16, addr_port: u16) {
+    pub fn add_node(&mut self, node_id: u64, host: String, log_port: u16, heartbeat_port: u16) {
         if let Some(v) = self.log_addrs.remove(&node_id) {
             std::mem::forget(v);
         }
@@ -67,7 +68,7 @@ impl DefResolver {
 
         self.internal_addrs.insert(
             node_id,
-            crate::string_to_static_str(format!("{}:{}", host, log_port)),
+            crate::string_to_static_str(format!("{}:{}", host, heartbeat_port)),
         );
     }
 

@@ -34,7 +34,7 @@ fn _send(raft: Arc<Raft>, data: Arc<Vec<u8>>) -> RaftResult<()> {
         while let Some(res) = rx.recv().await {
             match res {
                 Err(e) => error!("submit log has err:[{:?}]", e),
-                Ok(v) => {
+                Ok(_) => {
                     need -= 1;
                     if need == 0 {
                         return Ok(());

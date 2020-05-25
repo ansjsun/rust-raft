@@ -38,7 +38,10 @@ struct Vote {
 
 impl Vote {
     fn update(&mut self, leader: u64, term: u64, end_time: u64) -> bool {
-        if end_time > current_millis() && (self.leader != leader || self.term != term) {
+        if self.end_time > current_millis()
+            && self.leader != 0
+            && (self.leader != leader || self.term != term)
+        {
             return false;
         }
         self.leader = leader;
@@ -113,6 +116,24 @@ impl Raft {
         } else {
             Err(RaftError::VoteNotAllow)
         }
+    }
+
+    pub fn leader(&self, leader: u64, term: u64, index: u64) -> RaftResult<()> {
+        let self_term = self.term.load(SeqCst);
+        if self_term > term {
+            return Err(RaftError::TermLess);
+        } else if self_term < term {
+            self.term.store(term, SeqCst);
+        }
+
+        if self.store.last_applied() < index {
+            self.applied_notify.notify();
+        }
+
+        self.leader.store(leader, SeqCst);
+
+        let _ = self.sm.apply_leader_change(leader, term, index);
+        return Ok(());
     }
 
     pub fn is_follower(&self) -> bool {
@@ -224,7 +245,7 @@ impl Raft {
                     let (_, committed, applied) = raft.store.info();
                     let ie = Entry::Heartbeat {
                         term: raft.term.load(SeqCst),
-                        leader: raft.id,
+                        leader: raft.conf.node_id,
                         committed: committed,
                         applied: applied,
                     };
@@ -234,7 +255,10 @@ impl Raft {
                 } else if raft.is_follower() {
                     if current_millis() - raft.last_heart.load(SeqCst) > raft.conf.heartbeate_ms * 2
                     {
-                        info!("{} to long time recive heartbeat , try to leader", raft.id);
+                        info!(
+                            "{} to long time recive heartbeat , try to leader",
+                            raft.conf.node_id
+                        );
                         //rand sleep to elect
                         sleep(Duration::from_millis(
                             rand::thread_rng().gen_range(150, 300),
@@ -250,7 +274,7 @@ impl Raft {
                             raft.to_follower();
                         } else {
                             if let Err(e) = Raft::to_leader(raft.clone()) {
-                                error!("raft:{} to leader has err:{}", raft.id, e);
+                                error!("raft:{} to leader has err:{}", raft.conf.node_id, e);
                                 raft.to_follower();
                             }
                         }
@@ -268,7 +292,7 @@ impl Raft {
             raft.to_follower();
         } else {
             if let Err(e) = Raft::to_leader(raft.clone()) {
-                error!("raft:{} to leader has err:{}", raft.id, e);
+                error!("raft:{} to leader has err:{}", raft.conf.node_id, e);
                 raft.to_follower();
                 return Err(e);
             }
@@ -278,6 +302,7 @@ impl Raft {
 
     //put empty log
     fn to_leader(raft: Arc<Raft>) -> RaftResult<()> {
+        info!("raft:{} to leader ", raft.id);
         let mut state = raft.state.write().unwrap();
         if let RaftState::Leader = *state {
             return Ok(());
@@ -287,15 +312,16 @@ impl Raft {
         raft.last_heart.store(current_millis(), SeqCst);
         sender::send(
             raft.clone(),
-            &Entry::Commit {
+            &Entry::ToLeader {
+                leader: raft.conf.node_id,
                 term: raft.term.load(SeqCst),
                 index: raft.store.last_index(),
-                commond: Vec::default(),
             },
         )
     }
 
     fn to_follower(&self) {
+        info!("raft:{} to follower ", self.id);
         let mut state = self.state.write().unwrap();
         if let RaftState::Follower = *state {
             return;
@@ -305,14 +331,16 @@ impl Raft {
     }
 
     fn to_voter(raft: Arc<Raft>) -> RaftResult<()> {
+        info!("raft:{} to voter ", raft.id);
         if raft.voted.lock().unwrap().update(
-            raft.id,
+            raft.conf.node_id,
             raft.term.load(SeqCst),
             current_millis() + raft.conf.heartbeate_ms,
         ) {
             let mut state = raft.state.write().unwrap();
             *state = RaftState::Candidate;
         } else {
+            println!("-----------------");
             // found myself voting in this term
             return Err(RaftError::VoteNotAllow);
         }
@@ -322,7 +350,7 @@ impl Raft {
             raft.clone(),
             &Entry::Vote {
                 term: raft.term.load(SeqCst),
-                leader: raft.id,
+                leader: raft.conf.node_id,
                 committed: raft.store.last_index(),
             },
         )

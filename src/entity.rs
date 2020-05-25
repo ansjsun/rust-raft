@@ -14,7 +14,8 @@ pub mod entry_type {
     pub const HEARTBEAT: u8 = 0;
     pub const VOTE: u8 = 1;
     pub const COMMIT: u8 = 2;
-    pub const APPLY: u8 = 2;
+    pub const APPLY: u8 = 3;
+    pub const TO_LEADER: u8 = 4;
 }
 
 #[derive(Debug)]
@@ -35,9 +36,14 @@ pub enum Entry {
         applied: u64,
     },
     Vote {
-        term: u64,
         leader: u64,
+        term: u64,
         committed: u64,
+    },
+    ToLeader {
+        leader: u64,
+        term: u64,
+        index: u64,
     },
 }
 
@@ -73,9 +79,14 @@ impl Decode for Entry {
                 index: read_u64_slice(&buf, 9),
             },
             entry_type::VOTE => Entry::Vote {
-                term: read_u64_slice(&buf, 1),
-                leader: read_u64_slice(&buf, 9),
+                leader: read_u64_slice(&buf, 1),
+                term: read_u64_slice(&buf, 9),
                 committed: read_u64_slice(&buf, 17),
+            },
+            entry_type::TO_LEADER => Entry::ToLeader {
+                leader: read_u64_slice(&buf, 1),
+                term: read_u64_slice(&buf, 9),
+                index: read_u64_slice(&buf, 17),
             },
             _ => return Err(RaftError::TypeErr),
         };
@@ -124,9 +135,20 @@ impl Encode for Entry {
             } => {
                 vec = Vec::with_capacity(25);
                 vec.push(entry_type::VOTE);
-                vec.extend_from_slice(&u64::to_be_bytes(*term));
                 vec.extend_from_slice(&u64::to_be_bytes(*leader));
+                vec.extend_from_slice(&u64::to_be_bytes(*term));
                 vec.extend_from_slice(&u64::to_be_bytes(*committed));
+            }
+            Entry::ToLeader {
+                term,
+                leader,
+                index,
+            } => {
+                vec = Vec::with_capacity(25);
+                vec.push(entry_type::VOTE);
+                vec.extend_from_slice(&u64::to_be_bytes(*leader));
+                vec.extend_from_slice(&u64::to_be_bytes(*term));
+                vec.extend_from_slice(&u64::to_be_bytes(*index));
             }
         }
         vec
@@ -149,6 +171,7 @@ impl Entry {
             Entry::Vote {
                 term, committed, ..
             } => (*term, *committed, 33),
+            Entry::ToLeader { term, index, .. } => (*term, *index, 33),
         }
     }
 
