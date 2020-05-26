@@ -21,7 +21,6 @@ impl Server {
         Server {
             conf: conf.clone(),
             raft_server: Arc::new(RaftServer::new(
-                conf.clone(),
                 Arc::new(Box::new(resolver)),
                 Arc::new(Box::new(sm)),
             )),
@@ -29,8 +28,11 @@ impl Server {
     }
 
     pub fn start(&self) -> RaftResult<()> {
-        self._start_heartbeat(self.conf.heartbeat_port);
+        println!("123");
+        // self._start_heartbeat(self.conf.heartbeat_port);
+        println!("1231");
         self._start_replicate(self.conf.replicate_port);
+        println!("1233");
         return Ok(());
     }
 
@@ -73,6 +75,10 @@ impl Server {
             .unwrap()
             .insert(id, raft.clone());
 
+        if self.conf.node_id == leader {
+            let _ = Raft::try_to_leader(raft.clone());
+        }
+
         Ok(raft)
     }
 
@@ -92,58 +98,62 @@ impl Server {
 
     pub fn _start_replicate(&self, port: u16) {
         let rs = self.raft_server.clone();
-        smol::Task::spawn(async move {
-            let listener = match Async::<TcpListener>::bind(format!("0.0.0.0:{}", port)) {
-                Ok(l) => l,
-                Err(e) => panic!(RaftError::NetError(e.to_string())),
-            };
-            info!("start transport on server 0.0.0.0:{}", port);
-            loop {
-                match listener.accept().await {
-                    Ok((stream, _)) => {
-                        let rs = rs.clone();
-                        Task::spawn(log(rs, stream)).unwrap().detach();
+        smol::run(async {
+            smol::Task::spawn(async move {
+                println!("----------------------------------");
+                let listener = match Async::<TcpListener>::bind(format!("0.0.0.0:{}", port)) {
+                    Ok(l) => l,
+                    Err(e) => panic!(RaftError::NetError(e.to_string())),
+                };
+                info!("start transport on server 0.0.0.0:{}", port);
+                loop {
+                    match listener.accept().await {
+                        Ok((stream, _)) => {
+                            let rs = rs.clone();
+                            Task::spawn(log(rs, stream)).unwrap().detach();
+                        }
+                        Err(e) => error!("listener has err:{}", e.to_string()),
                     }
-                    Err(e) => error!("listener has err:{}", e.to_string()),
                 }
-            }
-        })
-        .detach();
+            })
+            .detach();
+        });
     }
 
     pub fn _start_heartbeat(&self, port: u16) {
         let rs = self.raft_server.clone();
-        smol::Task::spawn(async move {
-            let listener = match Async::<TcpListener>::bind(format!("0.0.0.0:{}", port)) {
-                Ok(l) => l,
-                Err(e) => panic!(RaftError::NetError(e.to_string())),
-            };
-            info!("start transport on server 0.0.0.0:{}", port);
-            loop {
-                let rs = rs.clone();
-                match listener.accept().await {
-                    Ok((stream, _)) => {
-                        Task::spawn(heartbeat(rs, stream)).unwrap().detach();
+        smol::run(async {
+            smol::Task::spawn(async move {
+                let listener = match Async::<TcpListener>::bind(format!("0.0.0.0:{}", port)) {
+                    Ok(l) => l,
+                    Err(e) => panic!(RaftError::NetError(e.to_string())),
+                };
+                info!("start transport on server 0.0.0.0:{}", port);
+                loop {
+                    println!("-------------------------------");
+                    let rs = rs.clone();
+                    match listener.accept().await {
+                        Ok((stream, _)) => {
+                            Task::spawn(heartbeat(rs, stream)).unwrap().detach();
+                        }
+                        Err(e) => error!("listener has err:{}", e.to_string()),
                     }
-                    Err(e) => error!("listener has err:{}", e.to_string()),
                 }
-            }
-        })
-        .detach();
+            })
+            .detach();
+        });
     }
 }
 
 struct RaftServer {
-    conf: Arc<Config>,
     rafts: RwLock<HashMap<u64, Arc<Raft>>>,
     resolver: RSL,
     sm: SM,
 }
 
 impl RaftServer {
-    fn new(conf: Arc<Config>, resolver: RSL, sm: SM) -> Self {
+    fn new(resolver: RSL, sm: SM) -> Self {
         RaftServer {
-            conf: conf,
             rafts: RwLock::new(HashMap::new()),
             resolver: resolver,
             sm: sm,

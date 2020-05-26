@@ -189,9 +189,11 @@ pub struct Config {
     pub replicate_port: u16,
     pub log_path: String,
     // how size of num for memory
-    pub log_size_max: u64,
+    pub log_max_num: usize,
     // how size of num for memory
-    pub log_size_min: u64,
+    pub log_min_num: usize,
+    // how size of num for memory
+    pub log_file_size_mb: u64,
     //Three  without a heartbeat , follower to begin consecutive elections
     pub heartbeate_ms: u64,
 }

@@ -102,6 +102,8 @@ impl RaftLog {
         self.log_mem.read().unwrap().applied
     }
 
+    //this method to store entry to mem  by vec .
+    //if vec length gather conf max log num  , it will truncation to min log num , but less than apllied index
     pub fn commit(&self, e: Entry) -> RaftResult<()> {
         let mut mem = self.log_mem.write().unwrap();
         let (term, index, _) = e.info();
@@ -120,6 +122,15 @@ impl RaftLog {
         mem.committed = index;
         mem.term = index;
         mem.logs.push(e);
+
+        if mem.logs.len() >= self.conf.log_max_num {
+            let trunca_index = u64::min(index - self.conf.log_min_num as u64, mem.applied);
+            if trunca_index > 10 {
+                let off = trunca_index - mem.offset;
+                mem.logs = mem.logs.split_off(off as usize);
+                mem.offset = trunca_index;
+            }
+        }
 
         Ok(())
     }
@@ -151,6 +162,18 @@ impl RaftLog {
             return Err(RaftError::IOError(err.to_string()));
         }
 
+        file.file_len = file.file_len + bs.len() as u64;
+
+        if file.file_len >= self.conf.log_file_size_mb * 1024 * 1024 {
+            conver(file.writer.flush())?;
+            let file_id = file.file_id + 1;
+            *file = LogFile::new(
+                Path::new(&self.conf.log_path).join(format!("{}", self.id)),
+                file_id,
+                0,
+            )?;
+        }
+
         self.log_mem.write().unwrap().applied = index;
 
         Ok(index)
@@ -163,7 +186,6 @@ pub struct LogMem {
     committed: u64,
     applied: u64,
     logs: Vec<Entry>,
-    mem_len: u64,
 }
 
 impl LogMem {
@@ -174,7 +196,6 @@ impl LogMem {
             term: 0,
             committed: index,
             applied: index,
-            mem_len: 0,
         };
     }
 

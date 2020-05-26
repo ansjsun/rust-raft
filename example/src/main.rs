@@ -14,8 +14,8 @@ fn main() {
     let server = server2.clone();
     server.start();
 
-    // let server = server3.clone();
-    // server.start();
+    let server = server3.clone();
+    server.start();
 
     let replicas = &vec![1, 2, 3];
 
@@ -54,9 +54,9 @@ impl StateMachine for SM {
 
 fn make_resolver() -> DefResolver {
     let mut def = DefResolver::new();
-    def.add_node(1, String::from("127.0.0.1"), 1000, 1001);
-    def.add_node(2, String::from("127.0.0.1"), 2000, 2001);
-    def.add_node(3, String::from("127.0.0.1"), 3000, 3001);
+    def.add_node(1, String::from("127.0.0.1"), 10000, 10001);
+    def.add_node(2, String::from("127.0.0.1"), 20000, 20001);
+    def.add_node(3, String::from("127.0.0.1"), 30000, 30001);
     def
 }
 
@@ -67,7 +67,8 @@ fn make_config(id: u16) -> Config {
         replicate_port: id * 1000 + 1,
         heartbeate_ms: 300,
         log_path: format!("data/raft{}", id),
-        log_size_max: 20000,
-        log_size_min: 10000,
+        log_max_num: 20000,
+        log_min_num: 10000,
+        log_file_size_mb: 35,
     }
 }
