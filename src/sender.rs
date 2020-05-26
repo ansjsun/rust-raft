@@ -10,10 +10,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub fn send(raft: Arc<Raft>, entry: &Entry) -> RaftResult<()> {
-    _send(raft, Arc::new(entry.encode()))
-}
-
-fn _send(raft: Arc<Raft>, data: Arc<Vec<u8>>) -> RaftResult<()> {
+    let data = Arc::new(entry.encode());
     let len = raft.replicas.len();
 
     let (tx, mut rx) = mpsc::channel(len);
@@ -28,6 +25,7 @@ fn _send(raft: Arc<Raft>, data: Arc<Vec<u8>>) -> RaftResult<()> {
             })
             .detach();
         }
+        drop(tx);
 
         let mut need = len / 2;
 
@@ -58,9 +56,10 @@ async fn execute(node_id: u64, raft: Arc<Raft>, body: Arc<Vec<u8>>) -> RaftResul
     };
 
     let mut stream = conver(Async::<TcpStream>::connect(addr).await)?;
-    if let Err(e) = stream.write_all(&body).await {
-        return Err(RaftError::NetError(e.to_string()));
-    };
+
+    conver(stream.write(&u64::to_be_bytes(node_id)).await)?;
+    conver(stream.write(&u32::to_be_bytes(body.len() as u32)).await)?;
+    conver(stream.write(&body).await)?;
 
     let mut resp = Vec::default();
     if let Err(e) = stream.read_to_end(&mut resp).await {
@@ -68,8 +67,11 @@ async fn execute(node_id: u64, raft: Arc<Raft>, body: Arc<Vec<u8>>) -> RaftResul
     };
     let re = RaftError::decode(resp);
     if let RaftError::Success = &re {
+        println!("++++++++++++++++++++++++++++++{}", re);
+
         return Ok(());
     }
+    println!("++++++++++++++++++++++++++++++{}", re);
 
     return Err(re);
 }

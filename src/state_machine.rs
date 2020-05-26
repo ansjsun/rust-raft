@@ -52,7 +52,7 @@ impl DefResolver {
         };
     }
 
-    pub fn add_node(&mut self, node_id: u64, host: String, log_port: u16, heartbeat_port: u16) {
+    pub fn add_node(&mut self, node_id: u64, host: String, heartbeat_port: u16, log_port: u16) {
         if let Some(v) = self.log_addrs.remove(&node_id) {
             std::mem::forget(v);
         }

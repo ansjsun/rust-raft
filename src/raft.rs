@@ -13,7 +13,8 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 pub struct Raft {
-    id: u64,
+    _id: u64,
+    node_id: u64,
     conf: Arc<Config>,
     state: RwLock<RaftState>,
     stopd: AtomicBool,
@@ -60,7 +61,8 @@ impl Raft {
         sm: SM,
     ) -> RaftResult<Self> {
         Ok(Raft {
-            id: id,
+            _id: id,
+            node_id: conf.node_id,
             conf: conf.clone(),
             state: RwLock::new(RaftState::Follower),
             stopd: AtomicBool::new(false),
@@ -211,7 +213,7 @@ impl Raft {
     pub fn start(self: &Arc<Raft>) {
         //this thread for apply log when new applied recived
         let raft = self.clone();
-        smol::Task::spawn(async move {
+        smol::Task::blocking(async move {
             while !raft.stopd.load(SeqCst) {
                 let index = match raft.store.apply(raft.applied.load(SeqCst)) {
                     Err(e) => {
@@ -239,7 +241,7 @@ impl Raft {
         .detach();
 
         let raft = self.clone();
-        smol::Task::spawn(async move {
+        smol::Task::blocking(async move {
             while !raft.stopd.load(SeqCst) {
                 if raft.is_leader() {
                     let (_, committed, applied) = raft.store.info();
@@ -302,7 +304,7 @@ impl Raft {
 
     //put empty log
     fn to_leader(raft: Arc<Raft>) -> RaftResult<()> {
-        info!("raft:{} to leader ", raft.id);
+        info!("raft:{} to leader ", raft.node_id);
         let mut state = raft.state.write().unwrap();
         if let RaftState::Leader = *state {
             return Ok(());
@@ -321,7 +323,7 @@ impl Raft {
     }
 
     fn to_follower(&self) {
-        info!("raft:{} to follower ", self.id);
+        info!("raft:{} to follower ", self.node_id);
         let mut state = self.state.write().unwrap();
         if let RaftState::Follower = *state {
             return;
@@ -331,7 +333,8 @@ impl Raft {
     }
 
     fn to_voter(raft: Arc<Raft>) -> RaftResult<()> {
-        info!("raft:{} to voter ", raft.id);
+        info!("raft:{} to voter ", raft.conf.node_id);
+
         if raft.voted.lock().unwrap().update(
             raft.conf.node_id,
             raft.term.load(SeqCst),
@@ -340,7 +343,6 @@ impl Raft {
             let mut state = raft.state.write().unwrap();
             *state = RaftState::Candidate;
         } else {
-            println!("-----------------");
             // found myself voting in this term
             return Err(RaftError::VoteNotAllow);
         }

@@ -2,26 +2,21 @@ use rust4rs::{entity::Config, error::*, server::Server, state_machine::*};
 use std::sync::Arc;
 
 fn main() {
-    env_logger::init();
+    env_logger::init_from_env(
+        env_logger::Env::default()
+            .filter_or("debug", "trace")
+            .write_style_or("auto", "always"),
+    );
 
-    let server1 = Arc::new(Server::new(make_config(1), make_resolver(), SM { id: 1 }));
-    let server2 = Arc::new(Server::new(make_config(2), make_resolver(), SM { id: 2 }));
-    let server3 = Arc::new(Server::new(make_config(3), make_resolver(), SM { id: 3 }));
-
-    let server = server1.clone();
-    server.start();
-
-    let server = server2.clone();
-    server.start();
-
-    let server = server3.clone();
-    server.start();
+    let server1 = Arc::new(Server::new(make_config(1), make_resolver(), SM { id: 1 })).start();
+    let server2 = Arc::new(Server::new(make_config(2), make_resolver(), SM { id: 2 })).start();
+    let server3 = Arc::new(Server::new(make_config(3), make_resolver(), SM { id: 3 })).start();
 
     let replicas = &vec![1, 2, 3];
 
     let _raft1 = server1.create_raft(1, 0, &replicas).unwrap();
-    let _raft2 = server1.create_raft(1, 0, &replicas).unwrap();
-    let _raft3 = server1.create_raft(1, 0, &replicas).unwrap();
+    let _raft2 = server2.create_raft(1, 0, &replicas).unwrap();
+    let _raft3 = server3.create_raft(1, 0, &replicas).unwrap();
 
     std::thread::sleep(std::time::Duration::from_secs(10000));
 }
@@ -63,8 +58,8 @@ fn make_resolver() -> DefResolver {
 fn make_config(id: u16) -> Config {
     Config {
         node_id: id as u64,
-        heartbeat_port: id * 1000,
-        replicate_port: id * 1000 + 1,
+        heartbeat_port: id * 10000,
+        replicate_port: id * 10000 + 1,
         heartbeate_ms: 300,
         log_path: format!("data/raft{}", id),
         log_max_num: 20000,

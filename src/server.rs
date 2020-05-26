@@ -27,13 +27,20 @@ impl Server {
         }
     }
 
-    pub fn start(&self) -> RaftResult<()> {
-        println!("123");
-        // self._start_heartbeat(self.conf.heartbeat_port);
-        println!("1231");
-        self._start_replicate(self.conf.replicate_port);
-        println!("1233");
-        return Ok(());
+    pub fn start(self: Arc<Server>) -> Arc<Server> {
+        let s = self.clone();
+        smol::Task::blocking(async move {
+            s._start_heartbeat(s.conf.heartbeat_port).await;
+        })
+        .detach();
+
+        let s = self.clone();
+        smol::Task::blocking(async move {
+            s._start_replicate(s.conf.replicate_port).await;
+        })
+        .detach();
+
+        self
     }
 
     pub fn stop(&self) -> RaftResult<()> {
@@ -96,52 +103,40 @@ impl Server {
         }
     }
 
-    pub fn _start_replicate(&self, port: u16) {
+    pub async fn _start_replicate(&self, port: u16) {
         let rs = self.raft_server.clone();
-        smol::run(async {
-            smol::Task::spawn(async move {
-                println!("----------------------------------");
-                let listener = match Async::<TcpListener>::bind(format!("0.0.0.0:{}", port)) {
-                    Ok(l) => l,
-                    Err(e) => panic!(RaftError::NetError(e.to_string())),
-                };
-                info!("start transport on server 0.0.0.0:{}", port);
-                loop {
-                    match listener.accept().await {
-                        Ok((stream, _)) => {
-                            let rs = rs.clone();
-                            Task::spawn(log(rs, stream)).unwrap().detach();
-                        }
-                        Err(e) => error!("listener has err:{}", e.to_string()),
-                    }
+        let listener = match Async::<TcpListener>::bind(format!("0.0.0.0:{}", port)) {
+            Ok(l) => l,
+            Err(e) => panic!(RaftError::NetError(e.to_string())),
+        };
+        info!("start transport on server 0.0.0.0:{}", port);
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    let rs = rs.clone();
+                    Task::spawn(log(rs, stream)).unwrap().detach();
                 }
-            })
-            .detach();
-        });
+                Err(e) => error!("listener has err:{}", e.to_string()),
+            }
+        }
     }
 
-    pub fn _start_heartbeat(&self, port: u16) {
+    pub async fn _start_heartbeat(&self, port: u16) {
         let rs = self.raft_server.clone();
-        smol::run(async {
-            smol::Task::spawn(async move {
-                let listener = match Async::<TcpListener>::bind(format!("0.0.0.0:{}", port)) {
-                    Ok(l) => l,
-                    Err(e) => panic!(RaftError::NetError(e.to_string())),
-                };
-                info!("start transport on server 0.0.0.0:{}", port);
-                loop {
-                    println!("-------------------------------");
-                    let rs = rs.clone();
-                    match listener.accept().await {
-                        Ok((stream, _)) => {
-                            Task::spawn(heartbeat(rs, stream)).unwrap().detach();
-                        }
-                        Err(e) => error!("listener has err:{}", e.to_string()),
-                    }
+        let listener = match Async::<TcpListener>::bind(format!("0.0.0.0:{}", port)) {
+            Ok(l) => l,
+            Err(e) => panic!(RaftError::NetError(e.to_string())),
+        };
+        info!("start transport on server 0.0.0.0:{}", port);
+        loop {
+            let rs = rs.clone();
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    Task::spawn(heartbeat(rs, stream)).unwrap().detach();
                 }
-            })
-            .detach();
-        });
+                Err(e) => error!("listener has err:{}", e.to_string()),
+            }
+        }
     }
 }
 
@@ -184,6 +179,9 @@ async fn heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) -> RaftRes
 
 async fn log(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) -> RaftResult<()> {
     let (raft_id, entry) = Entry::decode_stream(&mut stream).await?;
+
+    println!("{}, {:?}", raft_id, entry);
+
     let raft = match rs.rafts.read().unwrap().get(&raft_id) {
         Some(v) => v.clone(),
         None => return Err(RaftError::RaftNotFound(raft_id)),
