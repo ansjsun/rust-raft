@@ -8,7 +8,6 @@ use std::sync::{Arc, RwLock};
 
 static FILE_START: &str = "raft_";
 static FILE_END: &str = ".log";
-const MEM_CAPACITY: usize = 20000;
 
 pub struct RaftLog {
     id: u64,
@@ -20,7 +19,7 @@ pub struct RaftLog {
 impl RaftLog {
     //give a dir to found file index and max index id for Log file
     //file id start from 1
-    pub fn new(id: u64, conf: Arc<Config>) -> RaftResult<Self> {
+    pub fn new(id: u64, conf: Arc<Config>) -> RaftResult<(u64, Self)> {
         let dir = Path::new(&conf.log_path).join(format!("{}", id));
         if !dir.exists() {
             conver(fs::create_dir_all(&dir))?;
@@ -42,11 +41,12 @@ impl RaftLog {
 
         let log_file: LogFile;
         let log_mem: LogMem;
+        let mut last_term = 0;
 
         if file_id == 0 {
             //mean's new file
             log_file = LogFile::new(dir.clone(), 1, 0)?;
-            log_mem = LogMem::new(MEM_CAPACITY, 0);
+            log_mem = LogMem::new(conf.log_max_num, 0);
         } else {
             let file_path = dir.join(format!("raft_{}.id", file_id));
             let mut file = conver(fs::File::open(file_path))?;
@@ -57,18 +57,16 @@ impl RaftLog {
             loop {
                 if len == 0 {
                     log_file = LogFile::new(dir.clone(), file_id, len)?;
-                    log_mem = LogMem::new(MEM_CAPACITY, file_id - 1);
+                    log_mem = LogMem::new(conf.log_max_num, file_id - 1);
                     break;
                 }
                 let dl = read_u64(&mut file)?;
                 if len == offset + dl {
                     let mut buf = Vec::with_capacity(dl as usize);
                     conver(file.read(&mut buf))?;
-                    let index = match Entry::decode(buf)? {
-                        Entry::Commit { index, .. } => index,
-                        _ => panic!("log type has err"),
-                    };
-                    log_mem = LogMem::new(MEM_CAPACITY, index);
+                    let (term, index, _) = Entry::decode(buf)?.info();
+                    last_term = term;
+                    log_mem = LogMem::new(conf.log_max_num, index);
                     log_file = LogFile::new(dir.clone(), file_id, len)?;
                     break;
                 } else if len < offset + dl {
@@ -81,12 +79,15 @@ impl RaftLog {
             }
         }
 
-        Ok(RaftLog {
-            id: id,
-            conf: conf,
-            log_mem: RwLock::new(log_mem),
-            log_file: RwLock::new(log_file),
-        })
+        Ok((
+            last_term,
+            RaftLog {
+                id: id,
+                conf: conf,
+                log_mem: RwLock::new(log_mem),
+                log_file: RwLock::new(log_file),
+            },
+        ))
     }
 
     pub fn info(&self) -> (u64, u64, u64) {
@@ -166,7 +167,7 @@ impl RaftLog {
 
         if file.file_len >= self.conf.log_file_size_mb * 1024 * 1024 {
             conver(file.writer.flush())?;
-            let file_id = file.file_id + 1;
+            let file_id = index;
             *file = LogFile::new(
                 Path::new(&self.conf.log_path).join(format!("{}", self.id)),
                 file_id,
@@ -205,7 +206,6 @@ impl LogMem {
 }
 
 struct LogFile {
-    file_id: u64,
     file_len: u64,
     writer: io::BufWriter<fs::File>,
 }
@@ -226,7 +226,6 @@ impl LogFile {
             conver(file.seek(io::SeekFrom::Start(offset)))?;
         }
         Ok(LogFile {
-            file_id: file_id,
             file_len: offset,
             writer: io::BufWriter::new(file),
         })

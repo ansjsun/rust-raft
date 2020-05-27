@@ -52,6 +52,17 @@ impl Vote {
     }
 }
 
+pub struct RaftInfo {
+    pub id: u64,
+    pub node_id: u64,
+    pub leader: u64,
+    pub last_heart: u64,
+    pub term: u64,
+    pub commited: u64,
+    pub applied: u64,
+    pub state: RaftState,
+}
+
 impl Raft {
     pub fn new(
         id: u64,
@@ -60,19 +71,20 @@ impl Raft {
         resolver: RSL,
         sm: SM,
     ) -> RaftResult<Self> {
+        let (term, store) = RaftLog::new(id, conf.clone())?;
         Ok(Raft {
             id: id,
             node_id: conf.node_id,
             conf: conf.clone(),
             state: RwLock::new(RaftState::Follower),
             stopd: AtomicBool::new(false),
-            term: AtomicU64::new(0),
+            term: AtomicU64::new(term),
             voted: Mutex::new(Vote::default()),
             leader: AtomicU64::new(0),
             applied: AtomicU64::new(0),
             applied_notify: Notify::new(),
             last_heart: AtomicU64::new(current_millis()),
-            store: RaftLog::new(id, conf)?,
+            store: store,
             replicas: replicas,
             resolver: resolver,
             sm: sm,
@@ -114,6 +126,7 @@ impl Raft {
         let mut vote = self.voted.lock().unwrap();
 
         if vote.update(leader, term, current_millis() + self.conf.heartbeate_ms) {
+            self.last_heart.store(current_millis(), SeqCst);
             Ok(())
         } else {
             Err(RaftError::VoteNotAllow)
@@ -180,6 +193,20 @@ impl Raft {
         };
 
         return Err(RaftError::IndexLess(self.store.last_index()));
+    }
+
+    pub fn info(&self) -> RaftInfo {
+        let state = self.state.read().unwrap();
+        RaftInfo {
+            id: self.id,
+            node_id: self.node_id,
+            leader: self.leader.load(SeqCst),
+            last_heart: self.last_heart.load(SeqCst),
+            term: self.term.load(SeqCst),
+            commited: self.store.last_index(),
+            applied: self.store.last_applied(),
+            state: state.clone(),
+        }
     }
 }
 
@@ -265,17 +292,21 @@ impl Raft {
                         sleep(Duration::from_millis(
                             rand::thread_rng().gen_range(150, 300),
                         ));
+
+                        let term = raft.term.load(SeqCst);
+
                         if !raft.is_follower()
                             || current_millis() - raft.last_heart.load(SeqCst)
                                 < raft.conf.heartbeate_ms * 2
                         {
                             break;
                         }
-                        if let Err(e) = Raft::to_voter(raft.clone()) {
+
+                        if let Err(e) = Raft::to_voter(term, &raft) {
                             error!("send vote has err:{:?}", e);
                             raft.to_follower();
                         } else {
-                            if let Err(e) = Raft::to_leader(raft.clone()) {
+                            if let Err(e) = Raft::to_leader(&raft) {
                                 error!("raft:{} to leader has err:{}", raft.conf.node_id, e);
                                 raft.to_follower();
                             }
@@ -289,11 +320,11 @@ impl Raft {
     }
 
     pub fn try_to_leader(raft: Arc<Raft>) -> RaftResult<()> {
-        if let Err(e) = Raft::to_voter(raft.clone()) {
+        if let Err(e) = Raft::to_voter(raft.term.load(SeqCst), &raft) {
             error!("send vote has err:{:?}", e);
             raft.to_follower();
         } else {
-            if let Err(e) = Raft::to_leader(raft.clone()) {
+            if let Err(e) = Raft::to_leader(&raft) {
                 error!("raft:{} to leader has err:{}", raft.conf.node_id, e);
                 raft.to_follower();
                 return Err(e);
@@ -303,7 +334,7 @@ impl Raft {
     }
 
     //put empty log
-    fn to_leader(raft: Arc<Raft>) -> RaftResult<()> {
+    fn to_leader(raft: &Arc<Raft>) -> RaftResult<()> {
         info!("raft_node:{} to leader ", raft.node_id);
         if let Entry::LeaderChange {
             leader,
@@ -342,7 +373,7 @@ impl Raft {
         self.last_heart.store(current_millis(), SeqCst);
     }
 
-    fn to_voter(raft: Arc<Raft>) -> RaftResult<()> {
+    fn to_voter(term: u64, raft: &Arc<Raft>) -> RaftResult<()> {
         info!("raft:{} to voter ", raft.conf.node_id);
 
         if raft.voted.lock().unwrap().update(
@@ -361,7 +392,7 @@ impl Raft {
         sender::send(
             raft.clone(),
             &Entry::Vote {
-                term: raft.term.load(SeqCst),
+                term: term,
                 leader: raft.conf.node_id,
                 committed: raft.store.last_index(),
             },
