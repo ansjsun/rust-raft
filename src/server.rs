@@ -168,11 +168,11 @@ impl RaftServer {
                 term,
                 committed,
             } => raft.vote(*leader, *term, *committed),
-            Entry::ToLeader {
+            Entry::LeaderChange {
                 leader,
                 term,
                 index,
-            } => raft.leader(*leader, *term, *index),
+            } => raft.leader_change(*leader, *term, *index),
             _ => {
                 error!("err heartbeat type {:?}", entry);
                 Err(RaftError::TypeErr)

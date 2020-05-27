@@ -120,7 +120,7 @@ impl Raft {
         }
     }
 
-    pub fn leader(&self, leader: u64, term: u64, index: u64) -> RaftResult<()> {
+    pub fn leader_change(&self, leader: u64, term: u64, index: u64) -> RaftResult<()> {
         let self_term = self.term.load(SeqCst);
         if self_term > term {
             return Err(RaftError::TermLess);
@@ -304,22 +304,32 @@ impl Raft {
 
     //put empty log
     fn to_leader(raft: Arc<Raft>) -> RaftResult<()> {
-        info!("raft:{} to leader ", raft.node_id);
-        let mut state = raft.state.write().unwrap();
-        if let RaftState::Leader = *state {
-            return Ok(());
-        };
-        *state = RaftState::Leader;
-        raft.term.fetch_add(1, SeqCst);
-        raft.last_heart.store(current_millis(), SeqCst);
-        sender::send(
-            raft.clone(),
-            &Entry::ToLeader {
+        info!("raft_node:{} to leader ", raft.node_id);
+        if let Entry::LeaderChange {
+            leader,
+            term,
+            index,
+        } = {
+            let mut state = raft.state.write().unwrap();
+            if let RaftState::Leader = *state {
+                return Ok(());
+            };
+
+            *state = RaftState::Leader;
+            raft.term.fetch_add(1, SeqCst);
+            raft.last_heart.store(current_millis(), SeqCst);
+            let lc = Entry::LeaderChange {
                 leader: raft.conf.node_id,
                 term: raft.term.load(SeqCst),
                 index: raft.store.last_index(),
-            },
-        )
+            };
+            sender::send(raft.clone(), &lc)?;
+            lc
+        } {
+            raft.sm.apply_leader_change(leader, term, index);
+        }
+
+        Ok(())
     }
 
     fn to_follower(&self) {

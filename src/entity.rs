@@ -15,7 +15,7 @@ pub mod entry_type {
     pub const VOTE: u8 = 1;
     pub const COMMIT: u8 = 2;
     pub const APPLY: u8 = 3;
-    pub const TO_LEADER: u8 = 4;
+    pub const LEADER_CHANGE: u8 = 4;
 }
 
 #[derive(Debug)]
@@ -40,7 +40,7 @@ pub enum Entry {
         term: u64,
         committed: u64,
     },
-    ToLeader {
+    LeaderChange {
         leader: u64,
         term: u64,
         index: u64,
@@ -89,7 +89,7 @@ impl Decode for Entry {
                 term: read_u64_slice(&buf, 9),
                 committed: read_u64_slice(&buf, 17),
             },
-            entry_type::TO_LEADER => Entry::ToLeader {
+            entry_type::LEADER_CHANGE => Entry::LeaderChange {
                 leader: read_u64_slice(&buf, 1),
                 term: read_u64_slice(&buf, 9),
                 index: read_u64_slice(&buf, 17),
@@ -145,13 +145,13 @@ impl Encode for Entry {
                 vec.extend_from_slice(&u64::to_be_bytes(*term));
                 vec.extend_from_slice(&u64::to_be_bytes(*committed));
             }
-            Entry::ToLeader {
-                term,
+            Entry::LeaderChange {
                 leader,
+                term,
                 index,
             } => {
                 vec = Vec::with_capacity(25);
-                vec.push(entry_type::VOTE);
+                vec.push(entry_type::LEADER_CHANGE);
                 vec.extend_from_slice(&u64::to_be_bytes(*leader));
                 vec.extend_from_slice(&u64::to_be_bytes(*term));
                 vec.extend_from_slice(&u64::to_be_bytes(*index));
@@ -177,7 +177,7 @@ impl Entry {
             Entry::Vote {
                 term, committed, ..
             } => (*term, *committed, 33),
-            Entry::ToLeader { term, index, .. } => (*term, *index, 33),
+            Entry::LeaderChange { term, index, .. } => (*term, *index, 33),
         }
     }
 

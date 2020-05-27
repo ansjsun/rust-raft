@@ -31,7 +31,7 @@ pub fn send(raft: Arc<Raft>, entry: &Entry) -> RaftResult<()> {
 
         while let Some(res) = rx.recv().await {
             match res {
-                Err(e) => error!("submit log has err:[{:?}]", e),
+                Err(e) => error!("submit log has err:[{:?}] entry:[{:?}]", e, entry),
                 Ok(_) => {
                     need -= 1;
                     if need == 0 {
