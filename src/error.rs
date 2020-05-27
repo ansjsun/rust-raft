@@ -1,3 +1,5 @@
+pub static SUCCESS: &[u8] = &[0];
+
 #[derive(Debug, Error, PartialEq)]
 pub enum RaftError {
     #[error("success")]

@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 pub struct Raft {
-    _id: u64,
+    pub id: u64,
     node_id: u64,
     conf: Arc<Config>,
     state: RwLock<RaftState>,
@@ -61,7 +61,7 @@ impl Raft {
         sm: SM,
     ) -> RaftResult<Self> {
         Ok(Raft {
-            _id: id,
+            id: id,
             node_id: conf.node_id,
             conf: conf.clone(),
             state: RwLock::new(RaftState::Follower),
