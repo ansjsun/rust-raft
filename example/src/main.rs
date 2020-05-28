@@ -1,3 +1,4 @@
+use log::info;
 use rust4rs::{entity::Config, error::*, server::Server, state_machine::*};
 use std::sync::Arc;
 
@@ -9,14 +10,28 @@ fn main() {
     );
 
     let server1 = Arc::new(Server::new(make_config(1), make_resolver(), SM { id: 1 })).start();
-    let server2 = Arc::new(Server::new(make_config(2), make_resolver(), SM { id: 2 })).start();
-    let server3 = Arc::new(Server::new(make_config(3), make_resolver(), SM { id: 3 })).start();
+    // let server2 = Arc::new(Server::new(make_config(2), make_resolver(), SM { id: 2 })).start();
+    // let server3 = Arc::new(Server::new(make_config(3), make_resolver(), SM { id: 3 })).start();
 
-    let replicas = &vec![1, 2, 3];
+    let replicas = &vec![1];
 
-    let _raft1 = server1.create_raft(1, 0, &replicas).unwrap();
-    let _raft2 = server2.create_raft(1, 0, &replicas).unwrap();
-    let _raft3 = server3.create_raft(1, 0, &replicas).unwrap();
+    let raft1 = server1.create_raft(1, 0, &replicas).unwrap();
+    // let _raft2 = server2.create_raft(1, 0, &replicas).unwrap();
+    // let _raft3 = server3.create_raft(1, 0, &replicas).unwrap();
+
+    let mut times = 0;
+    while !raft1.is_leader() {
+        raft1.try_to_leader().unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        times += 1;
+        info!("wait raft1 to leader times:{}", times);
+    }
+
+    for i in 0..1000000 {
+        raft1
+            .submit(unsafe { format!("commit: {}", i).as_mut_vec().clone() })
+            .unwrap();
+    }
 
     std::thread::sleep(std::time::Duration::from_secs(10000));
 }
@@ -29,7 +44,10 @@ impl StateMachine for SM {
     fn apply(&self, term: &u64, index: &u64, command: &[u8]) -> RaftResult<()> {
         println!(
             "apply {} term:{} index:{} command:{:?}",
-            self.id, term, index, command
+            self.id,
+            term,
+            index,
+            String::from_utf8_lossy(command)
         );
         Ok(())
     }
@@ -64,6 +82,6 @@ fn make_config(id: u16) -> Config {
         log_path: format!("data/raft{}", id),
         log_max_num: 20000,
         log_min_num: 10000,
-        log_file_size_mb: 35,
+        log_file_size_mb: 10,
     }
 }

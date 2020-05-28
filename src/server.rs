@@ -83,7 +83,7 @@ impl Server {
             .insert(id, raft.clone());
 
         if self.conf.node_id == leader {
-            let _ = Raft::try_to_leader(raft.clone());
+            let _ = raft.try_to_leader();
         }
 
         Ok(raft)
@@ -160,21 +160,28 @@ impl RaftServer {
             Some(v) => v.clone(),
             None => return Err(RaftError::RaftNotFound(raft_id)),
         };
-        match &entry {
-            Entry::Commit { .. } => raft.store.commit(entry),
-            Entry::Apply { term, index } => raft.update_apply(*term, *index),
+        match entry {
+            Entry::Commit {
+                term,
+                index,
+                commond,
+            } => {
+                raft.store.commit(term, index, commond)?;
+                Ok(())
+            }
+            Entry::Apply { term, index } => raft.update_apply(term, index),
             Entry::Vote {
                 leader,
                 term,
                 committed,
-            } => raft.vote(*leader, *term, *committed),
+            } => raft.vote(leader, term, committed),
             Entry::LeaderChange {
                 leader,
                 term,
                 index,
-            } => raft.leader_change(*leader, *term, *index),
+            } => raft.leader_change(leader, term, index),
             _ => {
-                error!("err heartbeat type {:?}", entry);
+                error!("err log type {:?}", entry);
                 Err(RaftError::TypeErr)
             }
         }
@@ -215,7 +222,10 @@ async fn heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) {
 
 async fn log(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) {
     if let Err(e) = match match Entry::decode_stream(&mut stream).await {
-        Ok((raft_id, entry)) => rs.log(raft_id, entry),
+        Ok((raft_id, entry)) => {
+            println!("recive message :{:?}", entry);
+            rs.log(raft_id, entry)
+        }
         Err(e) => Err(e),
     } {
         Ok(()) => stream.write(SUCCESS).await,

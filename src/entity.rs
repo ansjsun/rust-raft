@@ -78,7 +78,7 @@ impl Decode for Entry {
             entry_type::COMMIT => Entry::Commit {
                 term: read_u64_slice(&buf, 1),
                 index: read_u64_slice(&buf, 9),
-                commond: buf,
+                commond: buf[17..].to_vec(),
             },
             entry_type::APPLY => Entry::Apply {
                 term: read_u64_slice(&buf, 1),

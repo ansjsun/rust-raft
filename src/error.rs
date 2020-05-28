@@ -26,6 +26,10 @@ pub enum RaftError {
     RaftNotFound(u64),
     #[error("raft not leader leader is:{0}")]
     NotLeader(u64),
+    #[error("raft log file not found by id:{0}")]
+    LogFileNotFound(u64),
+    #[error("raft log file invalid by id:{0}")]
+    LogFileInvalid(u64),
     #[error("not enough recipiet expect:{0} found:{1}")]
     NotEnoughRecipient(u16, u16),
 }
@@ -45,7 +49,9 @@ impl RaftError {
             RaftError::TypeErr => 9,
             RaftError::RaftNotFound(_) => 10,
             RaftError::NotLeader(_) => 11,
-            RaftError::NotEnoughRecipient(_, _) => 12,
+            RaftError::LogFileNotFound(_) => 12,
+            RaftError::LogFileInvalid(_) => 13,
+            RaftError::NotEnoughRecipient(_, _) => 14,
         }
     }
 }
@@ -79,7 +85,9 @@ impl RaftError {
             RaftError::NotfoundAddr(num)
             | RaftError::IndexLess(num)
             | RaftError::RaftNotFound(num)
-            | RaftError::NotLeader(num) => {
+            | RaftError::NotLeader(num)
+            | RaftError::LogFileNotFound(num)
+            | RaftError::LogFileInvalid(num) => {
                 result = Vec::with_capacity(9);
                 result.push(self.id());
                 result.extend_from_slice(&u64::to_be_bytes(*num));
@@ -109,7 +117,9 @@ impl RaftError {
             9 => RaftError::TypeErr,
             10 => RaftError::RaftNotFound(read_u64_slice(&data, 1)),
             11 => RaftError::NotLeader(read_u64_slice(&data, 1)),
-            12 => RaftError::NotEnoughRecipient(read_u16_slice(&data, 1), read_u16_slice(&data, 3)),
+            12 => RaftError::LogFileNotFound(read_u64_slice(&data, 1)),
+            13 => RaftError::LogFileInvalid(read_u64_slice(&data, 1)),
+            14 => RaftError::NotEnoughRecipient(read_u16_slice(&data, 1), read_u16_slice(&data, 3)),
             _ => panic!("not found"),
         }
     }

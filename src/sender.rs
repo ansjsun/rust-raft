@@ -10,6 +10,11 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub fn send(raft: Arc<Raft>, entry: &Entry) -> RaftResult<()> {
+    let len = raft.replicas.len();
+    if len == 0 {
+        return Ok(());
+    }
+
     let data = Arc::new(entry.encode());
     let len = raft.replicas.len();
 
