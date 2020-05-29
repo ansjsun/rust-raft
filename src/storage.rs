@@ -27,17 +27,16 @@ impl RaftLog {
         }
 
         let mut file_ids: Vec<u64> = conver(fs::read_dir(&dir))?
-            .map(|r| r.unwrap().path())
-            .filter(|p| !p.is_dir())
-            .filter(|p| {
-                let name = p.to_str().unwrap();
-                println!("{}", name);
-                name.starts_with(FILE_START) && name.ends_with(FILE_END)
+            .filter_map(|r| {
+                let path = r.unwrap().path();
+                if path.is_file() {
+                    Some(path.file_name().unwrap().to_str().unwrap().to_string())
+                } else {
+                    None
+                }
             })
-            .map(|p| {
-                let name = p.to_str().unwrap();
-                name[5..name.len() - 4].parse::<u64>().unwrap_or(0)
-            })
+            .filter(|name| name.starts_with(FILE_START) && name.ends_with(FILE_END))
+            .map(|name| name[5..name.len() - 4].parse::<u64>().unwrap())
             .collect();
 
         file_ids.sort_by(|a, b| a.cmp(b));
@@ -55,8 +54,6 @@ impl RaftLog {
             if let Some((offset, entry)) =
                 LogFile::read_last_entry(dir.clone(), file_ids[last_index], false)?
             {
-                println!("{},..............{:?}", offset, entry);
-                panic!("123");
                 let (term, index, _) = entry.info();
                 log_file = LogFile::new(dir.clone(), offset, file_ids)?;
                 log_mem = LogMem::new(conf.log_max_num, term, index);
@@ -123,7 +120,7 @@ impl RaftLog {
         });
 
         if mem.logs.len() >= self.conf.log_max_num {
-            let keep_num = usize::max(self.conf.log_min_num, (index - mem.applied + 1) as usize);
+            let keep_num = usize::max(self.conf.log_min_num, (index - mem.applied) as usize);
             if mem.logs.len() - keep_num > 10 {
                 let off = mem.logs.len() - keep_num;
                 mem.logs = mem.logs.split_off(off as usize);
@@ -137,7 +134,7 @@ impl RaftLog {
     //if this function has err ,Means that raft may not work anymore
     // If an IO error, such as insufficient disk space, the data will be unclean. Or an unexpected error occurred
     pub fn apply(&self, sm: &SM, target_applied: u64) -> RaftResult<()> {
-        let index = {
+        let (index, apply_result) = {
             let mem = self.log_mem.read().unwrap();
             if mem.applied >= target_applied {
                 return Ok(());
@@ -157,6 +154,8 @@ impl RaftLog {
                 return Err(RaftError::IOError(err.to_string()));
             }
 
+            conver(file.writer.flush())?;
+
             file.offset = file.offset + bs.len() as u64;
 
             if file.offset >= self.conf.log_file_size_mb * 1024 * 1024 {
@@ -166,21 +165,22 @@ impl RaftLog {
                 )?;
             }
 
-            if let Entry::Commit {
-                term,
+            (
                 index,
-                commond,
-            } = entry
-            {
-                sm.apply(term, index, commond)?;
-            };
-
-            index
+                match entry {
+                    Entry::Commit {
+                        term,
+                        index,
+                        commond,
+                    } => sm.apply(term, index, commond),
+                    _ => panic!("not support!!!!!!"),
+                },
+            )
         };
 
         self.log_mem.write().unwrap().applied = index;
 
-        Ok(())
+        apply_result
     }
 }
 // term , commited stands last entry info.
@@ -220,7 +220,6 @@ impl LogFile {
     //new logfile by ids, the ids is file list
     fn new(dir: PathBuf, offset: u64, ids: Vec<u64>) -> RaftResult<LogFile> {
         let file_path = dir.join(format!("{}{}{}", FILE_START, ids[ids.len() - 1], FILE_END));
-
         let mut writer = io::BufWriter::new(conver(
             fs::OpenOptions::new()
                 .create(true)
@@ -251,7 +250,6 @@ impl LogFile {
         validate: bool,
     ) -> RaftResult<Option<(u64, Entry)>> {
         let file_path = dir.join(format!("{}{}{}", FILE_START, field_id, FILE_END));
-
         if !file_path.exists() {
             if field_id == 0 {
                 return Ok(Some((
@@ -266,30 +264,46 @@ impl LogFile {
                 return Err(RaftError::LogFileNotFound(field_id));
             }
         }
-
-        let mut file = conver(fs::OpenOptions::new().read(true).open(file_path))?;
+        let file = conver(fs::OpenOptions::new().read(true).open(file_path))?;
 
         let mut offset: u64 = 0;
         let mut len = file.metadata().unwrap().len();
         let mut pre_offset: u64 = 0;
+
+        let mut file = io::BufReader::new(file);
+
         loop {
             if len == 0 {
-                return Ok(None);
+                return Ok(Some((
+                    0,
+                    Entry::Commit {
+                        term: 0,
+                        index: 0,
+                        commond: Vec::default(),
+                    },
+                )));
             }
-            let dl = read_u64(&mut file)?;
+
+            let dl = read_u32(&mut file)? as u64;
+            if dl < 4 {
+                return Err(RaftError::LogFileInvalid(field_id));
+            }
+
             if len == offset + dl {
-                let mut buf = Vec::with_capacity(dl as usize);
-                conver(file.read(&mut buf))?;
+                let mut buf = vec![0; dl as usize];
+                conver(file.read_exact(&mut buf))?;
                 return Ok(Some((offset, Entry::decode(buf)?)));
             } else if len < offset + dl {
                 if validate {
                     return Err(RaftError::LogFileInvalid(field_id));
                 }
                 len = offset;
-                conver(file.seek(io::SeekFrom::Start(pre_offset)))?;
+                offset = pre_offset - 4;
+                conver(file.seek(io::SeekFrom::Start(offset)))?;
             } else {
                 pre_offset = offset;
                 offset += dl;
+                conver(file.seek(io::SeekFrom::Current(dl as i64)))?;
             }
         }
     }
@@ -312,8 +326,58 @@ impl LogFile {
     }
 }
 
-fn read_u64(file: &mut fs::File) -> RaftResult<u64> {
-    let mut output = [0u8; 8];
-    conver(file.read(&mut output[..]))?;
-    Ok(u64::from_be_bytes(output))
+fn read_u32(file: &mut io::BufReader<fs::File>) -> RaftResult<u32> {
+    let mut output = [0u8; 4];
+    conver(file.read_exact(&mut output[..]))?;
+    Ok(u32::from_be_bytes(output))
+}
+
+pub fn validate_log_file(path: std::path::PathBuf) -> RaftResult<u64> {
+    let file = conver(fs::OpenOptions::new().read(true).open(path.clone()))?;
+    let mut offset: usize = 0;
+    let len = file.metadata().unwrap().len();
+
+    let mut file = io::BufReader::new(file);
+    let name = path.file_name().unwrap().to_str().unwrap().to_string();
+    let mut pre_index = name[5..name.len() - 4].parse::<u64>().unwrap() - 1;
+
+    loop {
+        if len as usize == offset {
+            return Ok(pre_index);
+        }
+
+        let dl = read_u32(&mut file)? as u64;
+        offset += 4;
+        if dl < 4 {
+            return Err(RaftError::Error(format!("lenth is err:{}", dl)));
+        }
+        let mut buf = vec![0; dl as usize];
+        conver(file.read_exact(&mut buf))?;
+        offset += buf.len();
+
+        let e = Entry::decode(buf)?;
+        pre_index += 1;
+
+        let (_, index, _) = e.info();
+        if pre_index != index {
+            return Err(RaftError::Error(format!(
+                "id is not continuous pre:{} now:{}",
+                pre_index, index
+            )));
+        }
+    }
+}
+
+#[test]
+fn test_validate_log_file() {
+    let raft_id = 1;
+    let file_id = 680087;
+    let path = Path::new("/Users/sunjian11/rustworkspace/projects/rust-raft/example/data/raft1")
+        .join(format!("{}", raft_id))
+        .join(format!("{}{}{}", FILE_START, file_id, FILE_END));
+    println!("dir....{:?}", path);
+    println!(
+        "result:.................{}",
+        validate_log_file(path).unwrap()
+    );
 }

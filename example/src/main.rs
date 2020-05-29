@@ -26,7 +26,6 @@ fn main() {
         times += 1;
         info!("wait raft1 to leader times:{}", times);
     }
-
     for i in 0..1000000 {
         raft1
             .submit(unsafe { format!("commit: {}", i).as_mut_vec().clone() })

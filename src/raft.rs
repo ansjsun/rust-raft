@@ -219,29 +219,11 @@ impl Raft {
         if !self.is_leader() {
             return Err(RaftError::NotLeader(self.leader.load(SeqCst)));
         }
-
         let term = self.term.load(SeqCst);
-
         let index = self.store.commit(term, 0, cmd)?;
-
-        let mem = self.store.log_mem.read().unwrap();
-        let e = mem.get(index);
-        sender::send(self.clone(), e)?;
         self.applied.fetch_add(1, SeqCst);
         self.applied_notify.notify();
-
-        let raft = self.clone();
-        if let Err(e) = sender::send(
-            raft,
-            &Entry::Apply {
-                term: term,
-                index: index,
-            },
-        ) {
-            error!("send apply has err:{}", e);
-        };
-
-        return Ok(());
+        self.store.apply(&self.sm, index)
     }
 
     pub fn start(self: &Arc<Raft>) {
@@ -249,12 +231,38 @@ impl Raft {
         let raft = self.clone();
         smol::Task::blocking(async move {
             while !raft.stopd.load(SeqCst) {
-                if let Err(e) = raft.store.apply(&raft.sm, raft.applied.load(SeqCst)) {
-                    error!("store apply has err:{}", e);
-                }
-
-                if raft.store.last_applied() >= raft.applied.load(SeqCst) {
+                if raft.applied.load(SeqCst) == 0 {
                     raft.applied_notify.notified().await;
+                    continue;
+                }
+                if raft.is_leader() {
+                    let (term, index, _) = raft
+                        .store
+                        .log_mem
+                        .read()
+                        .unwrap()
+                        .get(raft.applied.load(SeqCst))
+                        .info(); //TODO FIX ME if not applied remove if vec , it may be to panic
+                    if let Err(e) = sender::send(
+                        raft.clone(),
+                        &Entry::Apply {
+                            term: term,
+                            index: index,
+                        },
+                    ) {
+                        error!("send apply has err:{}", e);
+                    };
+
+                    if index >= raft.applied.load(SeqCst) {
+                        raft.applied_notify.notified().await;
+                    }
+                } else {
+                    if let Err(e) = raft.store.apply(&raft.sm, raft.applied.load(SeqCst)) {
+                        error!("store apply has err:{}", e);
+                    }
+                    if raft.store.last_applied() >= raft.applied.load(SeqCst) {
+                        raft.applied_notify.notified().await;
+                    }
                 }
             }
         })
