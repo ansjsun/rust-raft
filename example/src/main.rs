@@ -10,15 +10,14 @@ fn main() {
     );
 
     let server1 = Arc::new(Server::new(make_config(1), make_resolver(), SM { id: 1 })).start();
-    // let server2 = Arc::new(Server::new(make_config(2), make_resolver(), SM { id: 2 })).start();
-    // let server3 = Arc::new(Server::new(make_config(3), make_resolver(), SM { id: 3 })).start();
+    let server2 = Arc::new(Server::new(make_config(2), make_resolver(), SM { id: 2 })).start();
+    let server3 = Arc::new(Server::new(make_config(3), make_resolver(), SM { id: 3 })).start();
 
     let replicas = &vec![1];
 
     let raft1 = server1.create_raft(1, 0, &replicas).unwrap();
-    // let _raft2 = server2.create_raft(1, 0, &replicas).unwrap();
-    // let _raft3 = server3.create_raft(1, 0, &replicas).unwrap();
-
+    let _raft2 = server2.create_raft(1, 0, &replicas).unwrap();
+    let _raft3 = server3.create_raft(1, 0, &replicas).unwrap();
     let mut times = 0;
     while !raft1.is_leader() {
         raft1.try_to_leader().unwrap();
@@ -26,7 +25,7 @@ fn main() {
         times += 1;
         info!("wait raft1 to leader times:{}", times);
     }
-    for i in 0..1000000 {
+    for i in 0..5 {
         raft1
             .submit(unsafe { format!("commit: {}", i).as_mut_vec().clone() })
             .unwrap();

@@ -112,7 +112,10 @@ impl Raft {
             self.applied_notify.notify();
         }
 
-        self.leader.store(leader, SeqCst);
+        if self.leader.load(SeqCst) != leader {
+            self.leader.store(leader, SeqCst);
+        }
+
         return Ok(());
     }
 
@@ -231,7 +234,7 @@ impl Raft {
         let raft = self.clone();
         smol::Task::blocking(async move {
             while !raft.stopd.load(SeqCst) {
-                if raft.applied.load(SeqCst) == 0 {
+                if raft.applied.load(SeqCst) <= raft.store.last_applied() {
                     raft.applied_notify.notified().await;
                     continue;
                 }

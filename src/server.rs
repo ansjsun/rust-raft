@@ -222,10 +222,7 @@ async fn heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) {
 
 async fn log(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) {
     if let Err(e) = match match Entry::decode_stream(&mut stream).await {
-        Ok((raft_id, entry)) => {
-            println!("recive message :{:?}", entry);
-            rs.log(raft_id, entry)
-        }
+        Ok((raft_id, entry)) => rs.log(raft_id, entry),
         Err(e) => Err(e),
     } {
         Ok(()) => stream.write(SUCCESS).await,
