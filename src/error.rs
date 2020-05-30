@@ -103,23 +103,23 @@ impl RaftError {
         result
     }
 
-    pub fn decode(data: Vec<u8>) -> Self {
+    pub fn decode(data: &Vec<u8>) -> Self {
         match data[0] {
             0 => RaftError::Success,
-            1 => RaftError::Error(read_string(&data, 1)),
-            2 => RaftError::NetError(read_string(&data, 1)),
-            3 => RaftError::IOError(read_string(&data, 1)),
-            4 => RaftError::NotfoundAddr(read_u64_slice(&data, 1)),
+            1 => RaftError::Error(read_string(data, 1)),
+            2 => RaftError::NetError(read_string(data, 1)),
+            3 => RaftError::IOError(read_string(data, 1)),
+            4 => RaftError::NotfoundAddr(read_u64_slice(data, 1)),
             5 => RaftError::TermLess,
             6 => RaftError::TermGreater,
-            7 => RaftError::IndexLess(read_u64_slice(&data, 1)),
+            7 => RaftError::IndexLess(read_u64_slice(data, 1)),
             8 => RaftError::VoteNotAllow,
             9 => RaftError::TypeErr,
-            10 => RaftError::RaftNotFound(read_u64_slice(&data, 1)),
-            11 => RaftError::NotLeader(read_u64_slice(&data, 1)),
-            12 => RaftError::LogFileNotFound(read_u64_slice(&data, 1)),
-            13 => RaftError::LogFileInvalid(read_u64_slice(&data, 1)),
-            14 => RaftError::NotEnoughRecipient(read_u16_slice(&data, 1), read_u16_slice(&data, 3)),
+            10 => RaftError::RaftNotFound(read_u64_slice(data, 1)),
+            11 => RaftError::NotLeader(read_u64_slice(data, 1)),
+            12 => RaftError::LogFileNotFound(read_u64_slice(data, 1)),
+            13 => RaftError::LogFileInvalid(read_u64_slice(data, 1)),
+            14 => RaftError::NotEnoughRecipient(read_u16_slice(data, 1), read_u16_slice(data, 3)),
             _ => panic!("not found"),
         }
     }

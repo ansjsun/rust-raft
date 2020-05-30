@@ -3,11 +3,120 @@ use crate::entity::*;
 use crate::error::*;
 use crate::raft::Raft;
 use futures::prelude::*;
-use log::error;
+pub use log::Level::Debug;
+use log::{debug, error, log_enabled};
 use smol::Async;
+use std::collections::HashMap;
 use std::net::TcpStream;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::{channel, Receiver, Sender as ChannelSender};
+use tokio::sync::watch;
+use tokio::sync::Notify;
+
+pub struct Sender {
+    peers: RwLock<HashMap<u64, Arc<Notify>>>,
+}
+
+impl Sender {
+    pub fn new(raft: &Arc<Raft>, mut tx: ChannelSender<RaftError>) -> Self {
+        let peers = RwLock::new(HashMap::new());
+        for node_id in &raft.replicas {
+            let notify = Self::run_peer(*node_id, raft.clone(), tx.clone());
+            peers.write().unwrap().insert(*node_id, notify);
+        }
+
+        Self { peers: peers }
+    }
+
+    fn run_peer(node_id: u64, raft: Arc<Raft>, mut tx: ChannelSender<RaftError>) -> Arc<Notify> {
+        let notify = Arc::new(Notify::new());
+
+        let self_notify = notify.clone();
+        smol::Task::blocking(async move {
+            while !raft.is_stoped() {
+                if !raft.is_leader() {
+                    self_notify.notified().await;
+                }
+
+                if let Err(e) =
+                    Self::peer_job(node_id, raft.clone(), self_notify.clone(), tx.clone()).await
+                {
+                    //do some thing .....
+                    error!("peer job has err :{}", e);
+                }
+            }
+        })
+        .detach();
+
+        notify
+    }
+
+    async fn peer_job(
+        node_id: u64,
+        raft: Arc<Raft>,
+        self_notify: Arc<Notify>,
+        mut tx: ChannelSender<RaftError>,
+    ) -> RaftResult<()> {
+        let mut stream =
+            conver(Async::<TcpStream>::connect(raft.resolver.log_addr(&node_id)?).await)?;
+        let mut resp = Vec::default();
+        let mut index = raft.store.last_index();
+        let mut pre_index = 0;
+        loop {
+            let mut need_num = raft.replicas.len() / 2;
+
+            if raft.store.last_index() == pre_index {
+                self_notify.notified().await;
+            }
+
+            pre_index = index;
+            need_num = raft.replicas.len() / 2;
+            match raft.store.get_entry(index) {
+                Ok(body) => {
+                    conver(stream.write(&u64::to_be_bytes(raft.id)).await)?;
+                    conver(stream.write(&u32::to_be_bytes(body.len() as u32)).await)?;
+                    conver(stream.write(&body).await)?;
+                    conver(stream.read_to_end(&mut resp).await)?;
+
+                    let re = RaftError::decode(&resp);
+                    match &re {
+                        RaftError::Success => {
+                            if index == raft.store.last_index() {
+                                conver(tx.send(re).await)?;
+                            }
+                        }
+                        RaftError::IndexLess(i) => {
+                            error!("need index:{} less than push:{}", i, index);
+                            conver(tx.send(RaftError::IndexLess(*i)).await)?;
+                            index = i + 1;
+                        }
+                        _ => {
+                            error!(" result  has err:{}", re);
+                            conver(tx.send(re).await)?;
+                        }
+                    }
+                }
+                Err(_e) => panic!("impl me need use snapshot????"),
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Sender {
+    async fn write_entry(
+        stream: &mut Async<TcpStream>,
+        raft_id: u64,
+        body: Vec<u8>,
+    ) -> std::io::Result<()> {
+        stream.write(&u64::to_be_bytes(raft_id)).await?;
+        stream.write(&u32::to_be_bytes(body.len() as u32)).await?;
+        stream.write(&body).await?;
+        Ok(())
+    }
+}
 
 pub fn send(raft: Arc<Raft>, entry: &Entry) -> RaftResult<()> {
     let len = raft.replicas.len();
@@ -26,7 +135,8 @@ pub fn send(raft: Arc<Raft>, entry: &Entry) -> RaftResult<()> {
             let node_id = raft.replicas[i];
             let mut tx = tx.clone();
             smol::Task::spawn(async move {
-                let _ = tx.try_send(execute(node_id, raft, entry).await);
+                let result = execute(node_id, raft, entry).await;
+                let _ = tx.try_send(result);
             })
             .detach();
         }
@@ -70,7 +180,27 @@ async fn execute(node_id: u64, raft: Arc<Raft>, body: Arc<Vec<u8>>) -> RaftResul
     if let Err(e) = stream.read_to_end(&mut resp).await {
         return Err(RaftError::NetError(e.to_string()));
     };
-    let re = RaftError::decode(resp);
+
+    if log_enabled!(Debug) {
+        let e = Entry::decode((*body).clone()).unwrap();
+        match &e {
+            Entry::Heartbeat { .. } => {}
+            _ => {
+                let e = RaftError::decode(&resp);
+                if RaftError::Success != e {
+                    debug!(
+                        "node_id:{} send:{:?} got :{:?}",
+                        node_id,
+                        Entry::decode((*body).clone()),
+                        e,
+                    );
+                }
+            }
+        }
+    }
+
+    let re = RaftError::decode(&resp);
+
     if let RaftError::Success = &re {
         return Ok(());
     }

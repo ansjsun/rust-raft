@@ -2,7 +2,8 @@ use crate::state_machine::{RSL, SM};
 use crate::storage::RaftLog;
 use crate::*;
 use crate::{entity::*, error::*, sender};
-use log::{error, info};
+pub use log::Level::Debug;
+use log::{debug, error, info, log_enabled};
 use rand::Rng;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering::SeqCst},
@@ -59,7 +60,7 @@ pub struct RaftInfo {
     pub leader: u64,
     pub last_heart: u64,
     pub term: u64,
-    pub commited: u64,
+    pub committed: u64,
     pub applied: u64,
     pub state: RaftState,
 }
@@ -71,10 +72,12 @@ impl Raft {
         replicas: Vec<u64>,
         resolver: RSL,
         sm: SM,
-    ) -> RaftResult<Self> {
+    ) -> RaftResult<Arc<Self>> {
         let store = RaftLog::new(id, conf.clone())?;
         let (term, _, applied) = store.info();
-        Ok(Raft {
+
+        let (mut tx, mut rx) = mpsc::channel(256);
+        let raft = Arc::new(Raft {
             id: id,
             node_id: conf.node_id,
             conf: conf.clone(),
@@ -90,7 +93,23 @@ impl Raft {
             replicas: replicas,
             resolver: resolver,
             sm: sm,
-        })
+        });
+        sender::Sender::new(raft.clone());
+
+        Ok(raft)
+    }
+
+    //this function only call by leader
+    pub fn submit(self: &Arc<Raft>, cmd: Vec<u8>) -> RaftResult<()> {
+        if !self.is_leader() {
+            return Err(RaftError::NotLeader(self.leader.load(SeqCst)));
+        }
+        let term = self.term.load(SeqCst);
+        let index = self.store.commit(term, 0, cmd)?;
+        sender::send(self.clone(), self.store.log_mem.read().unwrap().get(index))?;
+        self.applied.fetch_add(1, SeqCst);
+        self.applied_notify.notify();
+        self.store.apply(&self.sm, index)
     }
 
     // use this function make sure raft is follower
@@ -107,6 +126,7 @@ impl Raft {
         } else if self_term < term {
             self.term.store(term, SeqCst);
         }
+        self.last_heart.store(current_millis(), SeqCst);
 
         if self.store.last_applied() < applied {
             self.applied_notify.notify();
@@ -127,11 +147,11 @@ impl Raft {
         if self.store.last_index() > committed {
             return Err(RaftError::IndexLess(committed));
         }
+        self.last_heart.store(current_millis(), SeqCst);
 
         let mut vote = self.voted.lock().unwrap();
 
         if vote.update(leader, term, current_millis() + self.conf.heartbeate_ms) {
-            self.last_heart.store(current_millis(), SeqCst);
             Ok(())
         } else {
             Err(RaftError::VoteNotAllow)
@@ -145,6 +165,7 @@ impl Raft {
         } else if self_term < term {
             self.term.store(term, SeqCst);
         }
+        self.last_heart.store(current_millis(), SeqCst);
 
         if self.store.last_applied() < index {
             self.applied_notify.notify();
@@ -181,9 +202,17 @@ impl Raft {
         (*self.state.read().unwrap()).clone()
     }
 
+    pub fn is_stoped(&self) -> bool {
+        self.stopd.load(SeqCst)
+    }
+
     pub fn update_apply(&self, term: u64, index: u64) -> RaftResult<()> {
-        if self.store.log_mem.read().unwrap().offset >= index {
+        if self.store.last_applied() >= index {
             return Ok(());
+        }
+
+        if self.store.last_index() < index {
+            return Err(RaftError::IndexLess(self.store.last_index()));
         }
 
         if let Entry::Commit { term: t, .. } = self.store.log_mem.read().unwrap().get(index) {
@@ -197,7 +226,6 @@ impl Raft {
                 return Err(RaftError::TermGreater);
             }
         };
-
         return Err(RaftError::IndexLess(self.store.last_index()));
     }
 
@@ -209,134 +237,28 @@ impl Raft {
             leader: self.leader.load(SeqCst),
             last_heart: self.last_heart.load(SeqCst),
             term: self.term.load(SeqCst),
-            commited: self.store.last_index(),
+            committed: self.store.last_index(),
             applied: self.store.last_applied(),
             state: state.clone(),
         }
     }
 }
 
+//these method for  replication
 impl Raft {
-    //this function only call by leader
-    pub fn submit(self: &Arc<Raft>, cmd: Vec<u8>) -> RaftResult<()> {
-        if !self.is_leader() {
-            return Err(RaftError::NotLeader(self.leader.load(SeqCst)));
-        }
-        let term = self.term.load(SeqCst);
-        let index = self.store.commit(term, 0, cmd)?;
-        self.applied.fetch_add(1, SeqCst);
-        self.applied_notify.notify();
-        self.store.apply(&self.sm, index)
-    }
-
-    pub fn start(self: &Arc<Raft>) {
-        //this thread for apply log when new applied recived
-        let raft = self.clone();
-        smol::Task::blocking(async move {
-            while !raft.stopd.load(SeqCst) {
-                if raft.applied.load(SeqCst) <= raft.store.last_applied() {
-                    raft.applied_notify.notified().await;
-                    continue;
-                }
-                if raft.is_leader() {
-                    let (term, index, _) = raft
-                        .store
-                        .log_mem
-                        .read()
-                        .unwrap()
-                        .get(raft.applied.load(SeqCst))
-                        .info(); //TODO FIX ME if not applied remove if vec , it may be to panic
-                    if let Err(e) = sender::send(
-                        raft.clone(),
-                        &Entry::Apply {
-                            term: term,
-                            index: index,
-                        },
-                    ) {
-                        error!("send apply has err:{}", e);
-                    };
-
-                    if index >= raft.applied.load(SeqCst) {
-                        raft.applied_notify.notified().await;
-                    }
-                } else {
-                    if let Err(e) = raft.store.apply(&raft.sm, raft.applied.load(SeqCst)) {
-                        error!("store apply has err:{}", e);
-                    }
-                    if raft.store.last_applied() >= raft.applied.load(SeqCst) {
-                        raft.applied_notify.notified().await;
-                    }
-                }
-            }
-        })
-        .detach();
-
-        let raft = self.clone();
-        smol::Task::blocking(async move {
-            while !raft.stopd.load(SeqCst) {
-                if raft.is_leader() {
-                    let (_, committed, applied) = raft.store.info();
-                    let ie = Entry::Heartbeat {
-                        term: raft.term.load(SeqCst),
-                        leader: raft.conf.node_id,
-                        committed: committed,
-                        applied: applied,
-                    };
-                    if let Err(e) = sender::send(raft.clone(), &ie) {
-                        error!("send heartbeat has err:{:?}", e);
-                    }
-                } else if raft.is_follower() {
-                    if current_millis() - raft.last_heart.load(SeqCst) > raft.conf.heartbeate_ms * 2
-                    {
-                        info!(
-                            "{} to long time recive heartbeat , try to leader",
-                            raft.conf.node_id
-                        );
-                        //rand sleep to elect
-                        sleep(Duration::from_millis(
-                            rand::thread_rng().gen_range(150, 300),
-                        ));
-
-                        let term = raft.term.load(SeqCst);
-
-                        if !raft.is_follower()
-                            || current_millis() - raft.last_heart.load(SeqCst)
-                                < raft.conf.heartbeate_ms * 2
-                        {
-                            break;
-                        }
-
-                        raft.leader.store(0, SeqCst);
-
-                        if let Err(e) = Raft::to_voter(term, &raft) {
-                            error!("send vote has err:{:?}", e);
-                            raft.to_follower();
-                        } else {
-                            if let Err(e) = Raft::to_leader(&raft) {
-                                error!("raft:{} to leader has err:{}", raft.conf.node_id, e);
-                                raft.to_follower();
-                            }
-                        }
-                    }
-                }
-                sleep(Duration::from_millis(raft.conf.heartbeate_ms));
-            }
-        })
-        .detach();
-    }
-
-    pub fn try_to_leader(self: &Arc<Raft>) -> RaftResult<()> {
+    pub fn try_to_leader(self: &Arc<Raft>) -> RaftResult<bool> {
         if let Err(e) = Raft::to_voter(self.term.load(SeqCst), self) {
             error!("send vote has err:{:?}", e);
             self.to_follower();
+            return Ok(false);
         } else {
             if let Err(e) = Raft::to_leader(self) {
                 error!("raft:{} to leader has err:{}", self.conf.node_id, e);
                 self.to_follower();
                 return Err(e);
             }
+            return Ok(false);
         }
-        return Ok(());
     }
 
     //put empty log
@@ -403,5 +325,117 @@ impl Raft {
                 committed: raft.store.last_index(),
             },
         )
+    }
+}
+
+//these method for job
+impl Raft {
+    pub fn start(self: &Arc<Raft>) {
+        //this thread for apply log when new applied recived
+        let raft = self.clone();
+        smol::Task::blocking(async move {
+            while !raft.stopd.load(SeqCst) {
+                let mut need_index = raft.applied.load(SeqCst);
+                if need_index <= raft.store.last_applied() {
+                    raft.applied_notify.notified().await;
+                    continue;
+                }
+
+                if raft.is_leader() {
+                    let (term, index, _) = raft
+                        .store
+                        .log_mem
+                        .read()
+                        .unwrap()
+                        .get(raft.applied.load(SeqCst))
+                        .info(); //TODO FIX ME if not applied remove if vec , it may be to panic
+                    if let Err(e) = sender::send(
+                        raft.clone(),
+                        &Entry::Apply {
+                            term: term,
+                            index: index,
+                        },
+                    ) {
+                        error!("send apply has err:{}", e);
+                    };
+
+                    if index >= raft.applied.load(SeqCst) {
+                        raft.applied_notify.notified().await;
+                    }
+                } else {
+                    if need_index > raft.store.last_index() {
+                        if log_enabled!(Debug) {
+                            debug!(
+                                "need_index:{} leass than raft last_index:{} applied:{}",
+                                need_index,
+                                raft.store.last_index(),
+                                raft.store.last_applied()
+                            );
+                        }
+                        need_index = raft.store.last_index();
+                    }
+                    if let Err(e) = raft.store.apply(&raft.sm, need_index) {
+                        error!("store apply has err:{}", e);
+                    }
+                    if raft.store.last_applied() >= need_index {
+                        raft.applied_notify.notified().await;
+                    }
+                }
+            }
+        })
+        .detach();
+
+        let raft = self.clone();
+        smol::Task::blocking(async move {
+            while !raft.stopd.load(SeqCst) {
+                if raft.is_leader() {
+                    let (_, committed, applied) = raft.store.info();
+                    let ie = Entry::Heartbeat {
+                        term: raft.term.load(SeqCst),
+                        leader: raft.conf.node_id,
+                        committed: committed,
+                        applied: applied,
+                    };
+                    if let Err(e) = sender::send(raft.clone(), &ie) {
+                        error!("send heartbeat has err:{:?}", e);
+                    }
+                } else if raft.is_follower() {
+                    if current_millis() - raft.last_heart.load(SeqCst) > raft.conf.heartbeate_ms * 2
+                    {
+                        info!(
+                            "{} to long time recive heartbeat , try to leader",
+                            raft.conf.node_id
+                        );
+                        //rand sleep to elect
+                        sleep(Duration::from_millis(
+                            rand::thread_rng().gen_range(150, 300),
+                        ));
+
+                        let term = raft.term.load(SeqCst);
+
+                        if !raft.is_follower()
+                            || current_millis() - raft.last_heart.load(SeqCst)
+                                < raft.conf.heartbeate_ms * 2
+                        {
+                            break;
+                        }
+
+                        raft.leader.store(0, SeqCst);
+
+                        if let Err(e) = Raft::to_voter(term, &raft) {
+                            error!("send vote has err:{:?}", e);
+                            raft.to_follower();
+                        } else {
+                            if let Err(e) = Raft::to_leader(&raft) {
+                                error!("raft:{} to leader has err:{}", raft.conf.node_id, e);
+                                raft.to_follower();
+                            }
+                        }
+                    }
+                }
+                sleep(Duration::from_millis(raft.conf.heartbeate_ms));
+            }
+        })
+        .detach();
     }
 }

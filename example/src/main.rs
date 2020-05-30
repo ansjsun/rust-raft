@@ -13,7 +13,7 @@ fn main() {
     let server2 = Arc::new(Server::new(make_config(2), make_resolver(), SM { id: 2 })).start();
     let server3 = Arc::new(Server::new(make_config(3), make_resolver(), SM { id: 3 })).start();
 
-    let replicas = &vec![1];
+    let replicas = &vec![1, 2, 3];
 
     let raft1 = server1.create_raft(1, 0, &replicas).unwrap();
     let _raft2 = server2.create_raft(1, 0, &replicas).unwrap();
@@ -25,9 +25,9 @@ fn main() {
         times += 1;
         info!("wait raft1 to leader times:{}", times);
     }
-    for i in 0..5 {
+    for i in 0..1000000 {
         raft1
-            .submit(unsafe { format!("commit: {}", i).as_mut_vec().clone() })
+            .submit(unsafe { format!("commit: {}", i + 1).as_mut_vec().clone() })
             .unwrap();
     }
 
@@ -40,13 +40,13 @@ struct SM {
 
 impl StateMachine for SM {
     fn apply(&self, term: &u64, index: &u64, command: &[u8]) -> RaftResult<()> {
-        println!(
-            "apply {} term:{} index:{} command:{:?}",
-            self.id,
-            term,
-            index,
-            String::from_utf8_lossy(command)
-        );
+        // println!(
+        //     "apply {} term:{} index:{} command:{:?}",
+        //     self.id,
+        //     term,
+        //     index,
+        //     String::from_utf8_lossy(command)
+        // );
         Ok(())
     }
     fn apply_member_change(&self, t: CommondType, index: u64) {

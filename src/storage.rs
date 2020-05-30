@@ -80,6 +80,21 @@ impl RaftLog {
         })
     }
 
+    //put a index id , return encoding entry . if memory not have it will try search in log_file
+    //if not found it will not found err . you may need by snapshot to sync it
+    //TODO: optimization me , buffer the last entry encode . will a good idea
+    pub fn get_entry(&self, mut index: u64) -> RaftResult<Vec<u8>> {
+        {
+            let mem = self.log_mem.read().unwrap();
+            if index >= mem.offset {
+                return Ok(self.log_mem.read().unwrap().get(index).encode());
+            }
+        }
+
+        //impl read from file
+        panic!("impl me ")
+    }
+
     pub fn info(&self) -> (u64, u64, u64) {
         let mem = self.log_mem.read().unwrap();
         (mem.term, mem.committed, mem.applied)
@@ -136,10 +151,15 @@ impl RaftLog {
 
     //if this function has err ,Means that raft may not work anymore
     // If an IO error, such as insufficient disk space, the data will be unclean. Or an unexpected error occurred
+    //return result<has_next>
     pub fn apply(&self, sm: &SM, target_applied: u64) -> RaftResult<()> {
         let (index, apply_result) = {
             let mem = self.log_mem.read().unwrap();
             if mem.applied >= target_applied {
+                return Ok(());
+            }
+
+            if mem.committed < target_applied {
                 return Ok(());
             }
 
@@ -187,7 +207,7 @@ impl RaftLog {
         apply_result
     }
 }
-// term , commited stands last entry info.
+// term , committed stands last entry info.
 // applied stands last store file log.
 pub struct LogMem {
     pub offset: u64,
@@ -312,7 +332,6 @@ impl LogFile {
             if len == offset + dl {
                 let mut buf = vec![0; dl as usize];
                 file.read_exact(&mut buf).unwrap();
-                println!("111");
                 return Ok(Some((offset, Entry::decode(buf)?)));
             } else if len < offset + dl {
                 if validate {
@@ -352,6 +371,14 @@ impl LogFile {
         self.offset = 0;
 
         Ok(())
+    }
+
+    fn iter(
+        fields: Vec<u64>,
+        index: u64,
+        callback: impl Fn(&Entry) -> RaftResult<()>,
+    ) -> RaftResult<()> {
+        panic!("implement me")
     }
 }
 
