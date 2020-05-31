@@ -66,13 +66,13 @@ impl Server {
             })
             .collect();
 
-        let raft = Arc::new(Raft::new(
+        let raft = Raft::new(
             id,
             self.conf.clone(),
             rep,
             self.raft_server.resolver.clone(),
             self.raft_server.sm.clone(),
-        )?);
+        )?;
 
         raft.start();
 

@@ -1,7 +1,7 @@
 use crate::state_machine::{RSL, SM};
 use crate::storage::RaftLog;
 use crate::*;
-use crate::{entity::*, error::*, sender};
+use crate::{entity::*, error::*, sender::Sender};
 pub use log::Level::Debug;
 use log::{debug, error, info, log_enabled};
 use rand::Rng;
@@ -11,33 +11,9 @@ use std::sync::{
 };
 use std::thread::sleep;
 use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::{Receiver, Sender as ChannelSender};
 use tokio::sync::Notify;
-
-//term stands max term for heartbeat.
-pub struct Raft {
-    pub id: u64,
-    node_id: u64,
-    conf: Arc<Config>,
-    state: RwLock<RaftState>,
-    stopd: AtomicBool,
-    term: AtomicU64,
-    voted: Mutex<Vote>,
-    leader: AtomicU64,
-    pub applied: AtomicU64,
-    applied_notify: Notify,
-    last_heart: AtomicU64,
-    pub store: RaftLog,
-    pub replicas: Vec<u64>,
-    pub resolver: RSL,
-    sm: SM,
-}
-
-#[derive(Default)]
-struct Vote {
-    leader: u64,
-    term: u64,
-    end_time: u64,
-}
 
 impl Vote {
     fn update(&mut self, leader: u64, term: u64, end_time: u64) -> bool {
@@ -65,6 +41,33 @@ pub struct RaftInfo {
     pub state: RaftState,
 }
 
+//term stands max term for heartbeat.
+pub struct Raft {
+    pub id: u64,
+    node_id: u64,
+    conf: Arc<Config>,
+    state: RwLock<RaftState>,
+    stopd: AtomicBool,
+    term: AtomicU64,
+    voted: Mutex<Vote>,
+    leader: AtomicU64,
+    pub applied: AtomicU64,
+    sender: RwLock<Sender>,
+    applied_notify: Notify,
+    last_heart: AtomicU64,
+    pub store: RaftLog,
+    pub replicas: Vec<u64>,
+    pub resolver: RSL,
+    sm: SM,
+}
+
+#[derive(Default)]
+struct Vote {
+    leader: u64,
+    term: u64,
+    end_time: u64,
+}
+
 impl Raft {
     pub fn new(
         id: u64,
@@ -76,7 +79,6 @@ impl Raft {
         let store = RaftLog::new(id, conf.clone())?;
         let (term, _, applied) = store.info();
 
-        let (mut tx, mut rx) = mpsc::channel(256);
         let raft = Arc::new(Raft {
             id: id,
             node_id: conf.node_id,
@@ -87,6 +89,7 @@ impl Raft {
             voted: Mutex::new(Vote::default()),
             leader: AtomicU64::new(0),
             applied: AtomicU64::new(applied),
+            sender: RwLock::new(sender::Sender::new()),
             applied_notify: Notify::new(),
             last_heart: AtomicU64::new(current_millis()),
             store: store,
@@ -94,8 +97,13 @@ impl Raft {
             resolver: resolver,
             sm: sm,
         });
-        sender::Sender::new(raft.clone());
 
+        for node_id in &raft.replicas {
+            raft.sender
+                .write()
+                .unwrap()
+                .run_peer(*node_id, raft.clone());
+        }
         Ok(raft)
     }
 
@@ -106,7 +114,7 @@ impl Raft {
         }
         let term = self.term.load(SeqCst);
         let index = self.store.commit(term, 0, cmd)?;
-        sender::send(self.clone(), self.store.log_mem.read().unwrap().get(index))?;
+        self.sender.read().unwrap().send(index);
         self.applied.fetch_add(1, SeqCst);
         self.applied_notify.notify();
         self.store.apply(&self.sm, index)
@@ -328,7 +336,7 @@ impl Raft {
     }
 }
 
-//these method for job
+//these method for peer job, if leader will sleep when to member start
 impl Raft {
     pub fn start(self: &Arc<Raft>) {
         //this thread for apply log when new applied recived
@@ -342,26 +350,7 @@ impl Raft {
                 }
 
                 if raft.is_leader() {
-                    let (term, index, _) = raft
-                        .store
-                        .log_mem
-                        .read()
-                        .unwrap()
-                        .get(raft.applied.load(SeqCst))
-                        .info(); //TODO FIX ME if not applied remove if vec , it may be to panic
-                    if let Err(e) = sender::send(
-                        raft.clone(),
-                        &Entry::Apply {
-                            term: term,
-                            index: index,
-                        },
-                    ) {
-                        error!("send apply has err:{}", e);
-                    };
-
-                    if index >= raft.applied.load(SeqCst) {
-                        raft.applied_notify.notified().await;
-                    }
+                    raft.applied_notify.notified().await;
                 } else {
                     if need_index > raft.store.last_index() {
                         if log_enabled!(Debug) {
