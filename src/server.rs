@@ -169,7 +169,7 @@ impl RaftServer {
                 raft.store.commit(term, index, commond)?;
                 Ok(())
             }
-            Entry::Apply { term, index } => raft.update_apply(term, index),
+            // Entry::Apply { term, index } => raft.update_apply(term, index),
             Entry::Vote {
                 leader,
                 term,

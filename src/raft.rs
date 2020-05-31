@@ -114,8 +114,12 @@ impl Raft {
         }
         let term = self.term.load(SeqCst);
         let index = self.store.commit(term, 0, cmd)?;
-        self.sender.read().unwrap().send(index);
-        self.applied.fetch_add(1, SeqCst);
+
+        self.sender.read().unwrap().send(
+            index,
+            self.store.log_mem.read().unwrap().get(index).encode(),
+        )?;
+        self.applied.store(index, SeqCst);
         self.applied_notify.notify();
         self.store.apply(&self.sm, index)
     }
@@ -285,12 +289,14 @@ impl Raft {
             *state = RaftState::Leader;
             raft.term.fetch_add(1, SeqCst);
             raft.last_heart.store(current_millis(), SeqCst);
+            let index = raft.store.last_index();
             let lc = Entry::LeaderChange {
                 leader: raft.conf.node_id,
                 term: raft.term.load(SeqCst),
-                index: raft.store.last_index(),
+                index: index,
             };
-            sender::send(raft.clone(), &lc)?;
+
+            raft.sender.read().unwrap().send(index, lc.encode())?;
             lc
         } {
             raft.sm.apply_leader_change(leader, term, index);
@@ -325,13 +331,16 @@ impl Raft {
         }
 
         raft.last_heart.store(current_millis(), SeqCst);
-        sender::send(
-            raft.clone(),
-            &Entry::Vote {
+
+        let index = raft.store.last_index();
+        raft.sender.read().unwrap().send(
+            index,
+            Entry::Vote {
                 term: term,
                 leader: raft.conf.node_id,
-                committed: raft.store.last_index(),
-            },
+                committed: index,
+            }
+            .encode(),
         )
     }
 }
@@ -385,7 +394,7 @@ impl Raft {
                         committed: committed,
                         applied: applied,
                     };
-                    if let Err(e) = sender::send(raft.clone(), &ie) {
+                    if let Err(e) = raft.sender.read().unwrap().send_heartbeat(ie.encode()) {
                         error!("send heartbeat has err:{:?}", e);
                     }
                 } else if raft.is_follower() {

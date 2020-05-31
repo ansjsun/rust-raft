@@ -14,7 +14,7 @@ pub mod entry_type {
     pub const HEARTBEAT: u8 = 0;
     pub const VOTE: u8 = 1;
     pub const COMMIT: u8 = 2;
-    pub const APPLY: u8 = 3;
+    // pub const APPLY: u8 = 3;
     pub const LEADER_CHANGE: u8 = 4;
 }
 
@@ -25,10 +25,10 @@ pub enum Entry {
         index: u64,
         commond: Vec<u8>,
     },
-    Apply {
-        term: u64,
-        index: u64,
-    },
+    // Apply {
+    //     term: u64,
+    //     index: u64,
+    // },
     Heartbeat {
         term: u64,
         leader: u64,
@@ -80,10 +80,10 @@ impl Decode for Entry {
                 index: read_u64_slice(&buf, 9),
                 commond: buf[17..].to_vec(),
             },
-            entry_type::APPLY => Entry::Apply {
-                term: read_u64_slice(&buf, 1),
-                index: read_u64_slice(&buf, 9),
-            },
+            // entry_type::APPLY => Entry::Apply {
+            //     term: read_u64_slice(&buf, 1),
+            //     index: read_u64_slice(&buf, 9),
+            // },
             entry_type::VOTE => Entry::Vote {
                 leader: read_u64_slice(&buf, 1),
                 term: read_u64_slice(&buf, 9),
@@ -128,12 +128,12 @@ impl Encode for Entry {
                 vec.extend_from_slice(&u64::to_be_bytes(*index));
                 vec.extend_from_slice(commond);
             }
-            Entry::Apply { term, index } => {
-                vec = Vec::with_capacity(17);
-                vec.push(entry_type::APPLY);
-                vec.extend_from_slice(&u64::to_be_bytes(*term));
-                vec.extend_from_slice(&u64::to_be_bytes(*index));
-            }
+            // Entry::Apply { term, index } => {
+            //     vec = Vec::with_capacity(17);
+            //     vec.push(entry_type::APPLY);
+            //     vec.extend_from_slice(&u64::to_be_bytes(*term));
+            //     vec.extend_from_slice(&u64::to_be_bytes(*index));
+            // }
             Entry::Vote {
                 term,
                 leader,
@@ -170,7 +170,7 @@ impl Entry {
                 commond,
                 ..
             } => (*term, *index, 17 + commond.len() as u64),
-            Entry::Apply { term, index } => (*term, *index, 17),
+            // Entry::Apply { term, index } => (entry_type::APPLY, *term, *index, 17),
             Entry::Heartbeat {
                 term, committed, ..
             } => (*term, *committed, 33),

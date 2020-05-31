@@ -2,21 +2,24 @@ use crate::entity::*;
 use crate::error::*;
 use crate::state_machine::SM;
 use log::warn;
+use smol::Async;
 use std::fs;
 use std::io;
 use std::io::prelude::*;
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 static FILE_START: &str = "raft_";
 static FILE_END: &str = ".log";
 static BUF_SIZE: usize = 1024 * 1024;
 
 pub struct RaftLog {
-    id: u64,
+    _id: u64,
     conf: Arc<Config>,
     pub log_mem: RwLock<LogMem>,
     log_file: RwLock<LogFile>,
+    lock_truncation: Mutex<usize>,
 }
 
 impl RaftLog {
@@ -73,26 +76,40 @@ impl RaftLog {
         }
 
         Ok(RaftLog {
-            id: id,
+            _id: id,
             conf: conf,
             log_mem: RwLock::new(log_mem),
             log_file: RwLock::new(log_file),
+            lock_truncation: Mutex::new(0),
         })
     }
 
-    //put a index id , return encoding entry . if memory not have it will try search in log_file
-    //if not found it will not found err . you may need by snapshot to sync it
-    //TODO: optimization me , buffer the last entry encode . will a good idea
-    pub fn get_entry(&self, mut index: u64) -> RaftResult<Vec<u8>> {
-        {
-            let mem = self.log_mem.read().unwrap();
-            if index >= mem.offset {
-                return Ok(self.log_mem.read().unwrap().get(index).encode());
+    pub fn iter(
+        &self,
+        stream: &mut Async<TcpStream>,
+        mut index: u64,
+        execute: impl Fn(&mut Async<TcpStream>, Vec<u8>) -> RaftResult<bool>,
+    ) -> RaftResult<()> {
+        let _v = self.lock_truncation.lock().unwrap();
+
+        if self.log_mem.read().unwrap().offset > index {
+            let ids = self.log_file.read().unwrap().file_ids.clone();
+
+            for id in ids {
+                if index > id {
+                    continue;
+                }
             }
         }
 
-        //impl read from file
-        panic!("impl me ")
+        while index < self.last_applied() {
+            let v = self.log_mem.read().unwrap().get(index).encode();
+            if !execute(stream, v)? {
+                return Ok(());
+            }
+            index += 1;
+        }
+        Ok(())
     }
 
     pub fn info(&self) -> (u64, u64, u64) {
@@ -183,10 +200,7 @@ impl RaftLog {
             file.offset = file.offset + bs.len() as u64;
 
             if file.offset >= self.conf.log_file_size_mb * 1024 * 1024 {
-                file.log_rolling(
-                    Path::new(&self.conf.log_path).join(format!("{}", self.id)),
-                    index + 1,
-                )?;
+                file.log_rolling(index + 1)?;
             }
 
             (
@@ -236,7 +250,8 @@ impl LogMem {
 
 struct LogFile {
     offset: u64,
-    filed_ids: Vec<u64>,
+    dir: PathBuf,
+    file_ids: Vec<u64>,
     writer: io::BufWriter<fs::File>,
 }
 
@@ -262,23 +277,24 @@ impl LogFile {
 
         Ok(LogFile {
             offset: offset,
-            filed_ids: ids,
+            dir: dir,
+            file_ids: ids,
             writer: writer,
         })
     }
 
     // read last entry by file , it return value Option<entry start offeset , entry>
     // if read dir is empty , it allways return zero entry
-    // if field_id is not exists , it return LogFileNotFound err value is field_id
+    // if file_id is not exists , it return LogFileNotFound err value is file_id
     //validate means the file complete, the last log file may be not complete,  but the penultimate must complete
     fn read_last_entry(
         dir: PathBuf,
-        field_id: u64,
+        file_id: u64,
         validate: bool,
     ) -> RaftResult<Option<(u64, Entry)>> {
-        let file_path = dir.join(format!("{}{}{}", FILE_START, field_id, FILE_END));
+        let file_path = dir.join(format!("{}{}{}", FILE_START, file_id, FILE_END));
         if !file_path.exists() {
-            if field_id == 0 {
+            if file_id == 0 {
                 return Ok(Some((
                     0,
                     Entry::Commit {
@@ -288,10 +304,10 @@ impl LogFile {
                     },
                 )));
             } else {
-                return Err(RaftError::LogFileNotFound(field_id));
+                return Err(RaftError::LogFileNotFound(file_id));
             }
         }
-        let file = conver(fs::OpenOptions::new().read(true).open(file_path.clone()))?;
+        let file = conver(fs::OpenOptions::new().read(true).open(&file_path))?;
 
         let mut offset: u64 = 0;
         let mut len = file.metadata().unwrap().len();
@@ -319,7 +335,7 @@ impl LogFile {
                 conver(
                     fs::OpenOptions::new()
                         .write(true)
-                        .open(file_path.clone())
+                        .open(&file_path)
                         .unwrap()
                         .set_len(len),
                 )?;
@@ -335,7 +351,7 @@ impl LogFile {
                 return Ok(Some((offset, Entry::decode(buf)?)));
             } else if len < offset + dl {
                 if validate {
-                    return Err(RaftError::LogFileInvalid(field_id));
+                    return Err(RaftError::LogFileInvalid(file_id));
                 }
                 len = offset - 4;
                 offset = pre_offset;
@@ -344,7 +360,7 @@ impl LogFile {
                 conver(
                     fs::OpenOptions::new()
                         .write(true)
-                        .open(file_path.clone())
+                        .open(&file_path)
                         .unwrap()
                         .set_len(len),
                 )?;
@@ -356,7 +372,7 @@ impl LogFile {
         }
     }
 
-    fn log_rolling(&mut self, dir: PathBuf, new_id: u64) -> RaftResult<()> {
+    fn log_rolling(&mut self, new_id: u64) -> RaftResult<()> {
         conver(self.writer.flush())?;
 
         let file = conver(
@@ -364,21 +380,16 @@ impl LogFile {
                 .create(true)
                 .read(true)
                 .write(true)
-                .open(dir.join(format!("{}{}{}", FILE_START, new_id, FILE_END))),
+                .open(
+                    self.dir
+                        .join(format!("{}{}{}", FILE_START, new_id, FILE_END)),
+                ),
         )?;
         self.writer = io::BufWriter::with_capacity(BUF_SIZE, file);
-        self.filed_ids.push(new_id);
+        self.file_ids.push(new_id);
         self.offset = 0;
 
         Ok(())
-    }
-
-    fn iter(
-        fields: Vec<u64>,
-        index: u64,
-        callback: impl Fn(&Entry) -> RaftResult<()>,
-    ) -> RaftResult<()> {
-        panic!("implement me")
     }
 }
 
@@ -389,7 +400,7 @@ fn read_u32(file: &mut io::BufReader<fs::File>) -> RaftResult<u32> {
 }
 
 pub fn validate_log_file(path: std::path::PathBuf, check: bool) -> RaftResult<u64> {
-    let file = conver(fs::OpenOptions::new().read(true).open(path.clone()))?;
+    let file = conver(fs::OpenOptions::new().read(true).open(&path))?;
     let mut offset: usize = 0;
     let len = file.metadata().unwrap().len();
 
