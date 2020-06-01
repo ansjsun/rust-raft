@@ -211,42 +211,40 @@ impl RaftServer {
 }
 
 async fn heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) {
-    if let Err(e) = match match Entry::decode_stream(&mut stream).await {
-        Ok((raft_id, entry)) => rs.heartbeat(raft_id, entry),
-        Err(e) => Err(e),
-    } {
-        Ok(()) => stream.write(SUCCESS).await,
-        Err(e) => stream.write(&e.encode()).await,
-    } {
-        error!("send heartbeat result to client has err:{}", e);
-    };
+    loop {
+        if let Err(e) = match match Entry::decode_stream(&mut stream).await {
+            Ok((raft_id, entry)) => rs.heartbeat(raft_id, entry),
+            Err(e) => Err(e),
+        } {
+            Ok(()) => stream.write(SUCCESS).await,
+            Err(e) => {
+                let result = e.encode();
+                if let Err(e) = stream.write(&u32::to_be_bytes(result.len() as u32)).await {
+                    Err(e)
+                } else {
+                    stream.write(&result).await
+                }
+            }
+        } {
+            error!("send heartbeat result to client has err:{}", e);
+        };
+    }
 }
 
 async fn log(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) {
-    let mut is_log = true;
-    while is_log {
+    loop {
         if let Err(e) = match match Entry::decode_stream(&mut stream).await {
-            Ok((raft_id, entry)) => {
-                if let Entry::Commit { .. } = &entry {
-                    is_log = true;
-                } else {
-                    is_log = false;
-                }
-                rs.log(raft_id, entry)
-            }
+            Ok((raft_id, entry)) => rs.log(raft_id, entry),
             Err(e) => Err(e),
         } {
-            Ok(()) => {
-                if is_log {
-                    println!("return .......success");
-                }
-                stream.write(SUCCESS).await
-            }
+            Ok(()) => stream.write(SUCCESS).await,
             Err(e) => {
-                if is_log {
-                    println!("return .......{:?}", e);
+                let result = e.encode();
+                if let Err(e) = stream.write(&u32::to_be_bytes(result.len() as u32)).await {
+                    Err(e)
+                } else {
+                    stream.write(&result).await
                 }
-                stream.write(&e.encode()).await
             }
         } {
             error!("send log result to client has err:{}", e);

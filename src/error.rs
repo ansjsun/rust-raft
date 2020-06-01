@@ -1,4 +1,4 @@
-pub static SUCCESS: &[u8] = &[0];
+pub static SUCCESS: &[u8] = &[0, 0, 0, 1, 1];
 
 #[derive(Debug, Error, PartialEq)]
 pub enum RaftError {
@@ -150,4 +150,9 @@ fn read_u64_slice(s: &[u8], start: usize) -> u64 {
 fn read_u16_slice(s: &[u8], start: usize) -> u16 {
     let ptr = s[start..start + 2].as_ptr() as *const [u8; 2];
     u16::from_be_bytes(unsafe { *ptr })
+}
+
+#[test]
+fn get() {
+    println!("{:?}", u32::to_be_bytes(1));
 }

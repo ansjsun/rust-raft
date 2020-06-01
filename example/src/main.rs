@@ -25,11 +25,15 @@ fn main() {
         times += 1;
         info!("wait raft1 to leader times:{}", times);
     }
-    for i in 0..1000000 {
-        raft1
-            .submit(unsafe { format!("commit: {}", i + 1).as_mut_vec().clone() })
-            .unwrap();
-    }
+
+    smol::run(async {
+        for i in 0..1000000 {
+            raft1
+                .submit(unsafe { format!("commit: {}", i + 1).as_mut_vec().clone() })
+                .await
+                .unwrap();
+        }
+    });
 
     std::thread::sleep(std::time::Duration::from_secs(10000));
 }

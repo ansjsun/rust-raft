@@ -8,203 +8,267 @@ pub use log::{debug, log_enabled, Level::Debug};
 use smol::Async;
 use smol::Timer;
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::sync::mpsc::{channel, Receiver, Sender as ChannelSender};
-use tokio::sync::Notify;
+use tokio::sync::mpsc::channel;
+
+struct Connection {
+    raft_id: [u8; 8],
+    stream: Async<TcpStream>,
+    len: [u8; 4],
+    buf: Vec<u8>,
+}
+
+impl Connection {
+    async fn send(&mut self, body: Arc<Vec<u8>>) -> std::io::Result<RaftError> {
+        self.stream.write(&self.raft_id).await?;
+        self.stream
+            .write(&u32::to_be_bytes(body.len() as u32))
+            .await?;
+        self.stream.write(&body).await?;
+
+        self.stream.read_exact(&mut self.len).await?;
+        let len = u32::from_be_bytes(self.len);
+
+        if len > 256 {
+            let mut buf: Vec<u8> = Vec::with_capacity(len as usize);
+            buf.resize_with(len as usize, Default::default);
+            self.stream.read_exact(&mut buf).await?;
+            Ok(RaftError::decode(&buf))
+        } else {
+            self.buf.resize_with(len as usize, Default::default);
+            self.stream.read_exact(&mut self.buf).await?;
+            Ok(RaftError::decode(&self.buf))
+        }
+    }
+}
+
+struct Manager {
+    typ: u8,
+    node_id: u64,
+    raft: Arc<Raft>,
+}
+
+impl Manager {
+    pub fn new(typ: u8, node_id: u64, raft: Arc<Raft>) -> Manager {
+        Manager {
+            typ: typ,
+            node_id: node_id,
+            raft: raft,
+        }
+    }
+}
+
+impl r2d2::ManageConnection for Manager {
+    type Connection = Connection;
+    type Error = RaftError;
+
+    fn connect(&self) -> Result<Connection, RaftError> {
+        let addr = if self.typ == entry_type::HEARTBEAT {
+            self.raft.resolver.heartbeat_addr(&self.node_id)?
+        } else {
+            self.raft.resolver.log_addr(&self.node_id)?
+        };
+
+        let raft_id = u64::to_be_bytes(self.node_id);
+
+        smol::run(async move {
+            Ok(Connection {
+                raft_id: raft_id,
+                len: [0; 4],
+                buf: Vec::with_capacity(256),
+                stream: timeout(500, Async::<TcpStream>::connect(addr)).await?,
+            })
+        })
+    }
+
+    fn is_valid(&self, _conn: &mut Connection) -> Result<(), RaftError> {
+        Ok(())
+    }
+
+    fn has_broken(&self, _conn: &mut Connection) -> bool {
+        true
+    }
+}
 
 pub struct Peer {
-    node_id: u64,
-    log_notify: Notify,
-    heartbeat_notify: Arc<Notify>,
+    heart_pool: r2d2::Pool<Manager>,
+    log_pool: r2d2::Pool<Manager>,
 }
 
 pub struct Sender {
-    //receiver<type, index, info>
-    rx: Mutex<Receiver<(u8, u64, RaftError)>>,
-    tx: ChannelSender<(u8, u64, RaftError)>,
-    peers: Vec<Arc<Peer>>,
-    last_buf: Arc<RwLock<(u8, u64, Arc<Vec<u8>>)>>,
+    peers: RwLock<Vec<Arc<Peer>>>,
 }
 
 impl Sender {
     pub fn new() -> Self {
-        let (tx, rx) = channel(256);
         Self {
-            peers: Vec::new(),
-            rx: Mutex::new(rx),
-            tx: tx,
-            last_buf: Arc::new(RwLock::new((0, 0, Arc::new(Vec::default())))),
+            peers: RwLock::new(Vec::new()),
         }
     }
 
-    pub fn send_heartbeat(&self, body: Vec<u8>) -> RaftResult<()> {
-        for p in &self.peers {
-            p.heartbeat_notify.notify()
-        }
-        Ok(())
-    }
+    pub async fn send_heartbeat(&self, body: Vec<u8>) {
+        let body = Arc::new(body);
 
-    pub fn send_log(&self, index: u64, body: Vec<u8>) -> RaftResult<()> {
-        let typ = body[0];
-        {
-            let mut v = self.last_buf.write().unwrap();
-            v.0 = typ;
-            v.1 = index;
-            v.2 = Arc::new(body);
-        }
-
-        for p in &self.peers {
-            p.log_notify.notify();
-        }
-
-        let half = self.peers.len() / 2 + self.peers.len() % 2;
-
-        smol::block_on(async {
-            let mut recive = self.rx.lock().unwrap();
-            let mut ok = 0;
-            let mut err = 0;
-            while let Some((t, i, e)) = recive.recv().await {
-                if t != typ || i != index {
-                    continue;
-                }
-
-                if e == RaftError::Success {
-                    ok += 1;
-                    if ok > half {
-                        return Ok(());
-                    }
-                } else {
-                    err += 1;
-                    if err > half {
-                        return Err(RaftError::NotEnoughRecipient(
-                            half as u16,
-                            (self.peers.len() - err) as u16,
-                        ));
-                    }
-                }
-            }
-            return Err(RaftError::Timeout(0)); //TODO full time
-        })
-    }
-
-    pub fn run_peer(&mut self, node_id: u64, raft: Arc<Raft>) {
-        let notify = Arc::new(Notify::new());
-
-        let peer = Arc::new(Peer {
-            node_id: node_id,
-            log_notify: notify.clone(),
-        });
-
-        let peer_job = peer.clone();
-
-        let tx = self.tx.clone();
-        let last_buf = self.last_buf.clone();
-        std::thread::spawn(|| {
-            smol::run(async move {
-                while !raft.is_stoped() {
-                    if !raft.is_leader() {
-                        peer_job.log_notify.notified().await;
-                    }
-
-                    let job_tx = tx.clone();
-                    let buf = last_buf.clone();
-
-                    if let Err(e) =
-                        Self::peer_job(raft.clone(), peer_job.clone(), job_tx, buf).await
-                    {
-                        error!("peer job has err :{}", e);
-                    }
+        let peers = self.peers.read().unwrap();
+        for p in &*peers {
+            let pool = p.heart_pool.clone();
+            let body = body.clone();
+            smol::Task::spawn(async move {
+                let mut conn = pool.get().unwrap();
+                if let Err(e) = conn.send(body).await {
+                    error!("send heartbeat has err:{}", e);
                 }
             })
-        });
-        self.peers.push(peer);
+            .detach();
+        }
     }
 
-    async fn peer_job(
-        raft: Arc<Raft>,
-        peer: Arc<Peer>,
-        mut tx: ChannelSender<(u8, u64, RaftError)>,
-        buf: Arc<RwLock<(u8, u64, Arc<Vec<u8>>)>>,
-    ) -> RaftResult<()> {
-        let addr = raft.resolver.log_addr(&peer.node_id)?;
-        let mut stream = timeout(500, Async::<TcpStream>::connect(addr)).await?;
-        let last_info = || -> (u8, u64, Arc<Vec<u8>>) {
-            let v = buf.read().unwrap();
-            (v.0, v.1, v.2.clone())
-        };
+    pub async fn send_log(&self, body: Vec<u8>) -> RaftResult<()> {
+        let body = Arc::new(body);
+        let peers = self.peers.read().unwrap();
+        let (tx, mut rx) = channel(peers.len());
+        for p in &*peers {
+            let pool = p.log_pool.clone();
+            let body = body.clone();
+            let mut tx = tx.clone();
+            smol::Task::spawn(async move {
+                let mut conn = pool.get().unwrap();
+                let _ = match conn.send(body).await {
+                    Ok(e) => tx.try_send(e),
+                    Err(e) => tx.try_send(RaftError::NetError(e.to_string())),
+                };
+            })
+            .detach();
+        }
 
-        let is_current = |t: u8, i: u64| {
-            let v = buf.read().unwrap();
-            v.0 == t && v.1 == i
-        };
+        let half = peers.len() / 2 + peers.len() % 2;
 
-        let mut resp = Vec::default();
-        let mut pre_value = (255, 0);
-        loop {
-            let (t, index, body) = last_info();
-            if (t, index) == pre_value {
-                peer.notify.notified().await;
-                continue;
-            }
-
-            pre_value = (t, index);
-
-            conver(stream.write(&u64::to_be_bytes(raft.id)).await)?;
-            conver(stream.write(&u32::to_be_bytes(body.len() as u32)).await)?;
-            conver(stream.write(&body).await)?;
-            resp.clear();
-            conver(stream.read_to_end(&mut resp).await)?;
-
-            let re = RaftError::decode(&resp);
-
-            match &re {
-                RaftError::Success => {
-                    if is_current(t, index) {
-                        conver(tx.send((t, index, re)).await)?;
-                    }
+        let mut ok = 0;
+        let mut err = 0;
+        while let Some(e) = rx.recv().await {
+            if e == RaftError::Success {
+                ok += 1;
+                if ok > half {
+                    return Ok(());
                 }
-                RaftError::IndexLess(i) => {
-                    error!("need index:{} less than push:{}", i, index);
-                    if is_current(t, index) {
-                        conver(tx.send((t, index, RaftError::IndexLess(*i))).await)?;
-                    }
-
-                    let raft_id = raft.id;
-                    raft.store
-                        .iter(&mut stream, i + 1, |stm, mut body| -> RaftResult<bool> {
-                            smol::block_on(async move {
-                                conver(stm.write(&u64::to_be_bytes(raft_id)).await)?;
-                                conver(stm.write(&u32::to_be_bytes(body.len() as u32)).await)?;
-                                conver(stm.write(&body).await)?;
-                                body.clear();
-                                conver(stm.read_to_end(&mut body).await)?;
-                                let re = RaftError::decode(&body);
-                                if re != RaftError::Success {
-                                    error!("send data has err:{}", re);
-                                    Err(re)
-                                } else {
-                                    Ok(true)
-                                }
-                            })
-                        })?;
-                }
-                RaftError::TermLess => {
-                    error!("send commit term less");
-                    if is_current(t, index) {
-                        conver(tx.send((t, index, RaftError::TermLess)).await)?;
-                    }
-                    break;
-                }
-                _ => {
-                    error!(" result  has err:{}", re);
-                    conver(tx.send((t, index, re)).await)?;
+            } else {
+                err += 1;
+                if err > half {
+                    return Err(RaftError::NotEnoughRecipient(
+                        half as u16,
+                        (peers.len() - err) as u16,
+                    ));
                 }
             }
         }
-
-        Ok(())
+        return Err(RaftError::Timeout(0)); //TODO full time
     }
+
+    pub fn add_peer(&self, node_id: u64, raft: Arc<Raft>) {
+        let heart_pool = r2d2::Pool::builder()
+            .max_size(1)
+            .min_idle(Some(0))
+            .build(Manager::new(entry_type::HEARTBEAT, node_id, raft.clone()))
+            .unwrap();
+        let log_pool = r2d2::Pool::builder()
+            .max_size(5)
+            .min_idle(Some(0))
+            .build(Manager::new(entry_type::COMMIT, node_id, raft.clone()))
+            .unwrap();
+
+        let peer = Arc::new(Peer {
+            heart_pool: heart_pool,
+            log_pool: log_pool,
+        });
+
+        self.peers.write().unwrap().push(peer);
+    }
+
+    //     async fn peer_job(
+    //         raft: Arc<Raft>,
+    //         peer: Arc<Peer>,
+    //         mut tx: ChannelSender<(u8, u64, RaftError)>,
+    //         buf: Arc<RwLock<(u8, u64, Arc<Vec<u8>>)>>,
+    //     ) -> RaftResult<()> {
+    //         let addr = raft.resolver.log_addr(&peer.node_id)?;
+    //         let mut stream = timeout(500, Async::<TcpStream>::connect(addr)).await?;
+    //         let last_info = || -> (u8, u64, Arc<Vec<u8>>) {
+    //             let v = buf.read().unwrap();
+    //             (v.0, v.1, v.2.clone())
+    //         };
+
+    //         let is_current = |t: u8, i: u64| {
+    //             let v = buf.read().unwrap();
+    //             v.0 == t && v.1 == i
+    //         };
+
+    //         let mut resp = Vec::default();
+    //         let mut pre_value = (255, 0);
+    //         loop {
+    //             let (t, index, body) = last_info();
+    //             if (t, index) == pre_value {
+    //                 peer.notify.notified().await;
+    //                 continue;
+    //             }
+
+    //             pre_value = (t, index);
+
+    //             conver(stream.write(&u64::to_be_bytes(raft.id)).await)?;
+    //             conver(stream.write(&u32::to_be_bytes(body.len() as u32)).await)?;
+    //             conver(stream.write(&body).await)?;
+    //             resp.clear();
+    //             conver(stream.read_to_end(&mut resp).await)?;
+
+    //             let re = RaftError::decode(&resp);
+
+    //             match &re {
+    //                 RaftError::Success => {
+    //                     if is_current(t, index) {
+    //                         conver(tx.send((t, index, re)).await)?;
+    //                     }
+    //                 }
+    //                 RaftError::IndexLess(i) => {
+    //                     error!("need index:{} less than push:{}", i, index);
+    //                     if is_current(t, index) {
+    //                         conver(tx.send((t, index, RaftError::IndexLess(*i))).await)?;
+    //                     }
+
+    //                     let raft_id = raft.id;
+    //                     raft.store
+    //                         .iter(&mut stream, i + 1, |stm, mut body| -> RaftResult<bool> {
+    //                             smol::block_on(async move {
+    //                                 conver(stm.write(&u64::to_be_bytes(raft_id)).await)?;
+    //                                 conver(stm.write(&u32::to_be_bytes(body.len() as u32)).await)?;
+    //                                 conver(stm.write(&body).await)?;
+    //                                 body.clear();
+    //                                 conver(stm.read_to_end(&mut body).await)?;
+    //                                 let re = RaftError::decode(&body);
+    //                                 if re != RaftError::Success {
+    //                                     error!("send data has err:{}", re);
+    //                                     Err(re)
+    //                                 } else {
+    //                                     Ok(true)
+    //                                 }
+    //                             })
+    //                         })?;
+    //                 }
+    //                 RaftError::TermLess => {
+    //                     error!("send commit term less");
+    //                     if is_current(t, index) {
+    //                         conver(tx.send((t, index, RaftError::TermLess)).await)?;
+    //                     }
+    //                     break;
+    //                 }
+    //                 _ => {
+    //                     error!(" result  has err:{}", re);
+    //                     conver(tx.send((t, index, re)).await)?;
+    //                 }
+    //             }
+    //         }
+
+    //         Ok(())
+    //     }
 }
 
 async fn timeout<T: std::fmt::Debug>(

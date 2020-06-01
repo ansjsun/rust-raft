@@ -52,7 +52,7 @@ pub struct Raft {
     leader: AtomicU64,
     //update by heartbeat or commit
     pub applied: AtomicU64,
-    sender: RwLock<Sender>,
+    sender: Sender,
     applied_notify: Notify,
     last_heart: AtomicU64,
     pub store: RaftLog,
@@ -89,7 +89,7 @@ impl Raft {
             voted: Mutex::new(Vote::default()),
             leader: AtomicU64::new(0),
             applied: AtomicU64::new(applied),
-            sender: RwLock::new(sender::Sender::new()),
+            sender: sender::Sender::new(),
             applied_notify: Notify::new(),
             last_heart: AtomicU64::new(current_millis()),
             store: store,
@@ -99,16 +99,13 @@ impl Raft {
         });
 
         for node_id in &raft.replicas {
-            raft.sender
-                .write()
-                .unwrap()
-                .run_peer(*node_id, raft.clone());
+            raft.sender.add_peer(*node_id, raft.clone());
         }
         Ok(raft)
     }
 
     //this function only call by leader
-    pub fn submit(self: &Arc<Raft>, cmd: Vec<u8>) -> RaftResult<()> {
+    pub async fn submit(self: &Arc<Raft>, cmd: Vec<u8>) -> RaftResult<()> {
         if !self.is_leader() {
             return Err(RaftError::NotLeader(self.leader.load(SeqCst)));
         }
@@ -116,10 +113,9 @@ impl Raft {
         let pre_term = self.store.last_term();
         let index = self.store.commit(pre_term, term, 0, cmd)?;
 
-        self.sender.read().unwrap().send_log(
-            index,
-            self.store.log_mem.read().unwrap().get(index).encode(),
-        )?;
+        self.sender
+            .send_log(self.store.log_mem.read().unwrap().get(index).encode())
+            .await?;
         self.applied.store(index, SeqCst);
         self.applied_notify.notify();
         self.store.apply(&self.sm, index)
@@ -401,14 +397,13 @@ impl Raft {
                         committed: committed,
                         applied: applied,
                     };
-                    if let Err(e) = raft.sender.read().unwrap().send_heartbeat(ie.encode()) {
-                        error!("send heartbeat has err:{:?}", e);
-                    }
+
+                    raft.sender.send_heartbeat(ie.encode()).await;
                 } else if raft.is_follower() {
                     if current_millis() - raft.last_heart.load(SeqCst) > raft.conf.heartbeate_ms * 3
                     {
                         info!(
-                            "{} to long time recive heartbeat , try to leader",
+                            "{} too long time recived heartbeat , try to leader",
                             raft.conf.node_id
                         );
                         //rand sleep to elect
