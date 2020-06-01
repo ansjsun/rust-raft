@@ -32,6 +32,8 @@ pub enum RaftError {
     LogFileInvalid(u64),
     #[error("time out by ms:{0}")]
     Timeout(u64),
+    #[error("incomplete data")]
+    IncompleteErr,
     #[error("not enough recipiet expect:{0} found:{1}")]
     NotEnoughRecipient(u16, u16),
 }
@@ -54,7 +56,8 @@ impl RaftError {
             RaftError::LogFileNotFound(_) => 12,
             RaftError::LogFileInvalid(_) => 13,
             RaftError::Timeout(_) => 14,
-            RaftError::NotEnoughRecipient(_, _) => 15,
+            RaftError::IncompleteErr => 15,
+            RaftError::NotEnoughRecipient(_, _) => 16,
         }
     }
 }
@@ -76,7 +79,8 @@ impl RaftError {
             | RaftError::TermLess
             | RaftError::TermGreater
             | RaftError::VoteNotAllow
-            | RaftError::TypeErr => {
+            | RaftError::TypeErr
+            | RaftError::IncompleteErr => {
                 result = Vec::with_capacity(1);
                 result.push(self.id());
             }
@@ -108,6 +112,9 @@ impl RaftError {
     }
 
     pub fn decode(data: &Vec<u8>) -> Self {
+        if data.len() < 1 {
+            return RaftError::IncompleteErr;
+        }
         match data[0] {
             0 => RaftError::Success,
             1 => RaftError::Error(read_string(data, 1)),
@@ -124,7 +131,8 @@ impl RaftError {
             12 => RaftError::LogFileNotFound(read_u64_slice(data, 1)),
             13 => RaftError::LogFileInvalid(read_u64_slice(data, 1)),
             14 => RaftError::Timeout(read_u64_slice(data, 1)),
-            15 => RaftError::NotEnoughRecipient(read_u16_slice(data, 1), read_u16_slice(data, 3)),
+            15 => RaftError::IncompleteErr,
+            16 => RaftError::NotEnoughRecipient(read_u16_slice(data, 1), read_u16_slice(data, 3)),
             _ => panic!("not found"),
         }
     }

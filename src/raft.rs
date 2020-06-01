@@ -1,7 +1,7 @@
 use crate::state_machine::{RSL, SM};
 use crate::storage::RaftLog;
 use crate::*;
-use crate::{entity::*, error::*, sender::Sender};
+use crate::{entity::*, error::*, sender::*};
 pub use log::Level::Debug;
 use log::{debug, error, info, log_enabled};
 use rand::Rng;
@@ -11,8 +11,6 @@ use std::sync::{
 };
 use std::thread::sleep;
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::{Receiver, Sender as ChannelSender};
 use tokio::sync::Notify;
 
 impl Vote {
@@ -48,9 +46,11 @@ pub struct Raft {
     conf: Arc<Config>,
     state: RwLock<RaftState>,
     stopd: AtomicBool,
+    //this term update by heartbeat
     term: AtomicU64,
     voted: Mutex<Vote>,
     leader: AtomicU64,
+    //update by heartbeat or commit
     pub applied: AtomicU64,
     sender: RwLock<Sender>,
     applied_notify: Notify,
@@ -113,9 +113,10 @@ impl Raft {
             return Err(RaftError::NotLeader(self.leader.load(SeqCst)));
         }
         let term = self.term.load(SeqCst);
-        let index = self.store.commit(term, 0, cmd)?;
+        let pre_term = self.store.last_term();
+        let index = self.store.commit(pre_term, term, 0, cmd)?;
 
-        self.sender.read().unwrap().send(
+        self.sender.read().unwrap().send_log(
             index,
             self.store.log_mem.read().unwrap().get(index).encode(),
         )?;
@@ -129,7 +130,7 @@ impl Raft {
         &self,
         term: u64,
         leader: u64,
-        _committed: u64,
+        committed: u64,
         applied: u64,
     ) -> RaftResult<()> {
         let self_term = self.term.load(SeqCst);
@@ -140,7 +141,11 @@ impl Raft {
         }
         self.last_heart.store(current_millis(), SeqCst);
 
-        if self.store.last_applied() < applied {
+        if term == self.store.last_term()
+            && committed == self.store.last_index()
+            && self.store.last_applied() < applied
+        {
+            self.applied.store(applied, SeqCst);
             self.applied_notify.notify();
         }
 
@@ -186,6 +191,7 @@ impl Raft {
         self.leader.store(leader, SeqCst);
 
         let _ = self.sm.apply_leader_change(leader, term, index);
+
         return Ok(());
     }
 
@@ -296,7 +302,7 @@ impl Raft {
                 index: index,
             };
 
-            raft.sender.read().unwrap().send(index, lc.encode())?;
+            send(raft, &lc)?;
             lc
         } {
             raft.sm.apply_leader_change(leader, term, index);
@@ -313,6 +319,7 @@ impl Raft {
         };
         *state = RaftState::Follower;
         self.last_heart.store(current_millis(), SeqCst);
+        self.applied_notify.notify();
     }
 
     fn to_voter(term: u64, raft: &Arc<Raft>) -> RaftResult<()> {
@@ -333,14 +340,13 @@ impl Raft {
         raft.last_heart.store(current_millis(), SeqCst);
 
         let index = raft.store.last_index();
-        raft.sender.read().unwrap().send(
-            index,
-            Entry::Vote {
+        send(
+            raft,
+            &Entry::Vote {
                 term: term,
                 leader: raft.conf.node_id,
                 committed: index,
-            }
-            .encode(),
+            },
         )
     }
 }
@@ -384,6 +390,7 @@ impl Raft {
         .detach();
 
         let raft = self.clone();
+        //this job for heartbeat . leader to send , follwer to check heartbeat time
         smol::Task::blocking(async move {
             while !raft.stopd.load(SeqCst) {
                 if raft.is_leader() {
@@ -398,7 +405,7 @@ impl Raft {
                         error!("send heartbeat has err:{:?}", e);
                     }
                 } else if raft.is_follower() {
-                    if current_millis() - raft.last_heart.load(SeqCst) > raft.conf.heartbeate_ms * 2
+                    if current_millis() - raft.last_heart.load(SeqCst) > raft.conf.heartbeate_ms * 3
                     {
                         info!(
                             "{} to long time recive heartbeat , try to leader",
@@ -413,7 +420,7 @@ impl Raft {
 
                         if !raft.is_follower()
                             || current_millis() - raft.last_heart.load(SeqCst)
-                                < raft.conf.heartbeate_ms * 2
+                                < raft.conf.heartbeate_ms * 3
                         {
                             break;
                         }

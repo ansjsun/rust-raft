@@ -4,7 +4,7 @@ use log::{error, info};
 use smol::{Async, Task};
 use std::collections::{HashMap, HashSet};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, RwLock};
+use std::sync::{atomic::Ordering::SeqCst, Arc, RwLock};
 
 pub struct Server {
     conf: Arc<Config>,
@@ -160,16 +160,18 @@ impl RaftServer {
             Some(v) => v.clone(),
             None => return Err(RaftError::RaftNotFound(raft_id)),
         };
+
         match entry {
             Entry::Commit {
+                pre_term,
                 term,
                 index,
                 commond,
             } => {
-                raft.store.commit(term, index, commond)?;
+                raft.store.commit(pre_term, term, index, commond)?;
+                raft.applied.store(index - 1, SeqCst);
                 Ok(())
             }
-            // Entry::Apply { term, index } => raft.update_apply(term, index),
             Entry::Vote {
                 leader,
                 term,
@@ -221,13 +223,33 @@ async fn heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) {
 }
 
 async fn log(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) {
-    if let Err(e) = match match Entry::decode_stream(&mut stream).await {
-        Ok((raft_id, entry)) => rs.log(raft_id, entry),
-        Err(e) => Err(e),
-    } {
-        Ok(()) => stream.write(SUCCESS).await,
-        Err(e) => stream.write(&e.encode()).await,
-    } {
-        error!("send log result to client has err:{}", e);
-    };
+    let mut is_log = true;
+    while is_log {
+        if let Err(e) = match match Entry::decode_stream(&mut stream).await {
+            Ok((raft_id, entry)) => {
+                if let Entry::Commit { .. } = &entry {
+                    is_log = true;
+                } else {
+                    is_log = false;
+                }
+                rs.log(raft_id, entry)
+            }
+            Err(e) => Err(e),
+        } {
+            Ok(()) => {
+                if is_log {
+                    println!("return .......success");
+                }
+                stream.write(SUCCESS).await
+            }
+            Err(e) => {
+                if is_log {
+                    println!("return .......{:?}", e);
+                }
+                stream.write(&e.encode()).await
+            }
+        } {
+            error!("send log result to client has err:{}", e);
+        };
+    }
 }

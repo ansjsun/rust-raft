@@ -56,22 +56,23 @@ impl RaftLog {
         } else {
             let last_index = file_ids.len() - 1;
 
-            if let Some((offset, entry)) =
-                LogFile::read_last_entry(dir.clone(), file_ids[last_index], false)?
-            {
-                let (term, index, _) = entry.info();
+            let (offset, entry) =
+                LogFile::read_last_entry(dir.clone(), file_ids[last_index], false)?;
+            let (term, index, _) = entry.info();
+            if index > 0 {
                 log_file = LogFile::new(dir.clone(), offset, file_ids)?;
+                log_mem = LogMem::new(conf.log_max_num, term, index);
+            } else if file_ids[last_index] == 1 {
+                log_file = LogFile::new(dir.clone(), 0, file_ids)?;
                 log_mem = LogMem::new(conf.log_max_num, term, index);
             } else {
                 warn!("first log file is invalidate so use the 2th log file");
-                match LogFile::read_last_entry(dir.clone(), file_ids[last_index - 2], true)? {
-                    Some((_, entry)) => {
-                        let (term, index, _) = entry.info();
-                        log_file = LogFile::new(dir.clone(), 0, file_ids)?;
-                        log_mem = LogMem::new(conf.log_max_num, term, index);
-                    }
-                    None => return Err(RaftError::LogFileInvalid(file_ids[last_index - 2])),
-                }
+
+                let (_, entry) =
+                    LogFile::read_last_entry(dir.clone(), file_ids[last_index - 2], true)?;
+                let (term, index, _) = entry.info();
+                log_file = LogFile::new(dir.clone(), 0, file_ids)?;
+                log_mem = LogMem::new(conf.log_max_num, term, index);
             }
         }
 
@@ -92,13 +93,52 @@ impl RaftLog {
     ) -> RaftResult<()> {
         let _v = self.lock_truncation.lock().unwrap();
 
-        if self.log_mem.read().unwrap().offset > index {
+        if self.log_mem.read().unwrap().offset >= index {
             let ids = self.log_file.read().unwrap().file_ids.clone();
+            let dir = self.log_file.read().unwrap().dir.clone();
+
+            let mut offset = 0;
+            for id in &ids {
+                let id = *id;
+                if index > id {
+                    continue;
+                }
+                let (o, e) = LogFile::read_last_entry(dir.clone(), id, true)?;
+                let (_, i, _) = e.info();
+                if i == 0 {
+                    return Err(RaftError::LogFileInvalid(id));
+                }
+                offset = o - 4;
+            }
 
             for id in ids {
                 if index > id {
                     continue;
                 }
+                let file = conver(
+                    fs::OpenOptions::new()
+                        .read(true)
+                        .open(dir.join(format!("{}{}{}", FILE_START, id, FILE_END))),
+                )?;
+
+                let file_len = file.metadata().unwrap().len();
+
+                let mut file = io::BufReader::new(file);
+                if offset > 0 {
+                    conver(file.seek(io::SeekFrom::Start(offset)))?;
+                }
+                loop {
+                    let dl = read_u32(&mut file)? as u64;
+                    offset += 4;
+                    let mut buf = vec![0; dl as usize];
+                    conver(file.read_exact(&mut buf))?;
+                    execute(stream, buf)?;
+                    offset += dl;
+                    if offset == file_len {
+                        break;
+                    }
+                }
+                offset = 0;
             }
         }
 
@@ -125,9 +165,19 @@ impl RaftLog {
         self.log_mem.read().unwrap().applied
     }
 
+    pub fn last_term(&self) -> u64 {
+        self.log_mem.read().unwrap().term
+    }
+
     //this method to store entry to mem  by vec .
     //if vec length gather conf max log num  , it will truncation to min log num , but less than apllied index
-    pub fn commit(&self, term: u64, mut index: u64, cmd: Vec<u8>) -> RaftResult<u64> {
+    pub fn commit(
+        &self,
+        pre_term: u64,
+        term: u64,
+        mut index: u64,
+        cmd: Vec<u8>,
+    ) -> RaftResult<u64> {
         let mut mem = self.log_mem.write().unwrap();
 
         if mem.term > term {
@@ -136,23 +186,36 @@ impl RaftLog {
 
         if index == 0 {
             index = mem.committed + 1;
-        } else {
-            if mem.committed + 1 < index {
-                return Err(RaftError::IndexLess(mem.committed));
-            } else if mem.committed + 1 > index {
-                //Indicates that log conflicts need to be rolled back
-                let new_len = (index - 1 - mem.offset) as usize;
-                unsafe { mem.logs.set_len(new_len) };
+        } else if index > mem.committed + 1 {
+            return Err(RaftError::IndexLess(mem.committed));
+        } else if index < mem.committed + 1 {
+            if index == mem.committed && term == mem.term {
+                return Ok(index);
             }
+            //Indicates that log conflicts need to be rolled back
+            let new_len = (index - mem.offset) as usize;
+            unsafe { mem.logs.set_len(new_len) };
         }
 
-        mem.committed = index;
-        mem.term = term;
+        if mem.term != pre_term {
+            //if not same pre term , means last entry is invalided . rolled bak
+            let new_len = mem.committed as usize - 1;
+            unsafe { mem.logs.set_len(new_len) };
+            let (term, index, _) = mem.get(mem.committed - 1).info();
+            mem.committed = index;
+            mem.term = term;
+            return Err(RaftError::IndexLess(index));
+        }
+
         mem.logs.push(Entry::Commit {
+            pre_term: pre_term,
             term: term,
             index: index,
             commond: cmd,
         });
+
+        mem.committed = index;
+        mem.term = term;
 
         if mem.logs.len() >= self.conf.log_max_num {
             let keep_num = usize::max(self.conf.log_min_num, (index - mem.applied) as usize);
@@ -210,6 +273,7 @@ impl RaftLog {
                         term,
                         index,
                         commond,
+                        ..
                     } => sm.apply(term, index, commond),
                     _ => panic!("not support!!!!!!"),
                 },
@@ -287,22 +351,19 @@ impl LogFile {
     // if read dir is empty , it allways return zero entry
     // if file_id is not exists , it return LogFileNotFound err value is file_id
     //validate means the file complete, the last log file may be not complete,  but the penultimate must complete
-    fn read_last_entry(
-        dir: PathBuf,
-        file_id: u64,
-        validate: bool,
-    ) -> RaftResult<Option<(u64, Entry)>> {
+    fn read_last_entry(dir: PathBuf, file_id: u64, validate: bool) -> RaftResult<(u64, Entry)> {
         let file_path = dir.join(format!("{}{}{}", FILE_START, file_id, FILE_END));
         if !file_path.exists() {
             if file_id == 0 {
-                return Ok(Some((
+                return Ok((
                     0,
                     Entry::Commit {
+                        pre_term: 0,
                         term: 0,
                         index: 0,
                         commond: Vec::default(),
                     },
-                )));
+                ));
             } else {
                 return Err(RaftError::LogFileNotFound(file_id));
             }
@@ -317,14 +378,15 @@ impl LogFile {
 
         loop {
             if len == 0 {
-                return Ok(Some((
+                return Ok((
                     0,
                     Entry::Commit {
+                        pre_term: 0,
                         term: 0,
                         index: 0,
                         commond: Vec::default(),
                     },
-                )));
+                ));
             }
 
             if len - offset <= 4 {
@@ -348,7 +410,7 @@ impl LogFile {
             if len == offset + dl {
                 let mut buf = vec![0; dl as usize];
                 file.read_exact(&mut buf).unwrap();
-                return Ok(Some((offset, Entry::decode(buf)?)));
+                return Ok((offset, Entry::decode(buf)?));
             } else if len < offset + dl {
                 if validate {
                     return Err(RaftError::LogFileInvalid(file_id));

@@ -40,13 +40,13 @@ struct SM {
 
 impl StateMachine for SM {
     fn apply(&self, term: &u64, index: &u64, command: &[u8]) -> RaftResult<()> {
-        // println!(
-        //     "apply {} term:{} index:{} command:{:?}",
-        //     self.id,
-        //     term,
-        //     index,
-        //     String::from_utf8_lossy(command)
-        // );
+        println!(
+            "apply {} term:{} index:{} command:{:?}",
+            self.id,
+            term,
+            index,
+            String::from_utf8_lossy(command)
+        );
         Ok(())
     }
     fn apply_member_change(&self, t: CommondType, index: u64) {

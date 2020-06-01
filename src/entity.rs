@@ -12,23 +12,19 @@ pub trait Encode {
 
 pub mod entry_type {
     pub const HEARTBEAT: u8 = 0;
-    pub const VOTE: u8 = 1;
-    pub const COMMIT: u8 = 2;
-    // pub const APPLY: u8 = 3;
-    pub const LEADER_CHANGE: u8 = 4;
+    pub const COMMIT: u8 = 1;
+    pub const VOTE: u8 = 2;
+    pub const LEADER_CHANGE: u8 = 3;
 }
 
 #[derive(Debug)]
 pub enum Entry {
     Commit {
+        pre_term: u64,
         term: u64,
         index: u64,
         commond: Vec<u8>,
     },
-    // Apply {
-    //     term: u64,
-    //     index: u64,
-    // },
     Heartbeat {
         term: u64,
         leader: u64,
@@ -49,13 +45,13 @@ pub enum Entry {
 
 async fn read_u32<S: AsyncReadExt + Unpin>(mut stream: S) -> RaftResult<u32> {
     let mut output = [0u8; 4];
-    conver(stream.read(&mut output[..]).await)?;
+    conver(stream.read_exact(&mut output[..]).await)?;
     Ok(u32::from_be_bytes(output))
 }
 
 async fn read_u64<S: AsyncReadExt + Unpin>(mut stream: S) -> RaftResult<u64> {
     let mut output = [0u8; 8];
-    conver(stream.read(&mut output[..]).await)?;
+    conver(stream.read_exact(&mut output[..]).await)?;
     Ok(u64::from_be_bytes(output))
 }
 
@@ -68,32 +64,53 @@ impl Decode for Entry {
     type Item = Self;
     #[warn(unreachable_patterns)]
     fn decode(buf: Vec<u8>) -> RaftResult<Self::Item> {
+        if buf.len() == 0 {
+            return Err(RaftError::IncompleteErr);
+        }
+
         let entry = match buf[0] {
-            entry_type::HEARTBEAT => Entry::Heartbeat {
-                term: read_u64_slice(&buf, 1),
-                leader: read_u64_slice(&buf, 9),
-                committed: read_u64_slice(&buf, 17),
-                applied: read_u64_slice(&buf, 25),
-            },
-            entry_type::COMMIT => Entry::Commit {
-                term: read_u64_slice(&buf, 1),
-                index: read_u64_slice(&buf, 9),
-                commond: buf[17..].to_vec(),
-            },
-            // entry_type::APPLY => Entry::Apply {
-            //     term: read_u64_slice(&buf, 1),
-            //     index: read_u64_slice(&buf, 9),
-            // },
-            entry_type::VOTE => Entry::Vote {
-                leader: read_u64_slice(&buf, 1),
-                term: read_u64_slice(&buf, 9),
-                committed: read_u64_slice(&buf, 17),
-            },
-            entry_type::LEADER_CHANGE => Entry::LeaderChange {
-                leader: read_u64_slice(&buf, 1),
-                term: read_u64_slice(&buf, 9),
-                index: read_u64_slice(&buf, 17),
-            },
+            entry_type::HEARTBEAT => {
+                if buf.len() != 33 {
+                    return Err(RaftError::IncompleteErr);
+                }
+                Entry::Heartbeat {
+                    term: read_u64_slice(&buf, 1),
+                    leader: read_u64_slice(&buf, 9),
+                    committed: read_u64_slice(&buf, 17),
+                    applied: read_u64_slice(&buf, 25),
+                }
+            }
+            entry_type::COMMIT => {
+                if buf.len() < 25 {
+                    return Err(RaftError::IncompleteErr);
+                }
+                Entry::Commit {
+                    pre_term: read_u64_slice(&buf, 1),
+                    term: read_u64_slice(&buf, 9),
+                    index: read_u64_slice(&buf, 17),
+                    commond: buf[25..].to_vec(),
+                }
+            }
+            entry_type::VOTE => {
+                if buf.len() != 25 {
+                    return Err(RaftError::IncompleteErr);
+                }
+                Entry::Vote {
+                    leader: read_u64_slice(&buf, 1),
+                    term: read_u64_slice(&buf, 9),
+                    committed: read_u64_slice(&buf, 17),
+                }
+            }
+            entry_type::LEADER_CHANGE => {
+                if buf.len() != 25 {
+                    return Err(RaftError::IncompleteErr);
+                }
+                Entry::LeaderChange {
+                    leader: read_u64_slice(&buf, 1),
+                    term: read_u64_slice(&buf, 9),
+                    index: read_u64_slice(&buf, 17),
+                }
+            }
             _ => return Err(RaftError::TypeErr),
         };
         Ok(entry)
@@ -118,22 +135,18 @@ impl Encode for Entry {
                 vec.extend_from_slice(&u64::to_be_bytes(*applied));
             }
             Entry::Commit {
+                pre_term,
                 term,
                 index,
                 commond,
             } => {
-                vec = Vec::with_capacity(17 + commond.len());
+                vec = Vec::with_capacity(25 + commond.len());
                 vec.push(entry_type::COMMIT);
+                vec.extend_from_slice(&u64::to_be_bytes(*pre_term));
                 vec.extend_from_slice(&u64::to_be_bytes(*term));
                 vec.extend_from_slice(&u64::to_be_bytes(*index));
                 vec.extend_from_slice(commond);
             }
-            // Entry::Apply { term, index } => {
-            //     vec = Vec::with_capacity(17);
-            //     vec.push(entry_type::APPLY);
-            //     vec.extend_from_slice(&u64::to_be_bytes(*term));
-            //     vec.extend_from_slice(&u64::to_be_bytes(*index));
-            // }
             Entry::Vote {
                 term,
                 leader,
@@ -170,7 +183,6 @@ impl Entry {
                 commond,
                 ..
             } => (*term, *index, 17 + commond.len() as u64),
-            // Entry::Apply { term, index } => (entry_type::APPLY, *term, *index, 17),
             Entry::Heartbeat {
                 term, committed, ..
             } => (*term, *committed, 33),
@@ -186,7 +198,7 @@ impl Entry {
         let len = read_u32(&mut stream).await?;
         let mut buf: Vec<u8> = Vec::with_capacity(len as usize);
         buf.resize_with(len as usize, Default::default);
-        conver(stream.read(&mut buf).await)?;
+        conver(stream.read_exact(&mut buf).await)?;
         Ok((raft_id, Self::decode(buf)?))
     }
 }

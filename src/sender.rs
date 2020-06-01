@@ -1,21 +1,22 @@
-use crate::entity::Entry;
-use crate::entity::*;
+use crate::entity::{entry_type, *};
 use crate::error::*;
 use crate::raft::Raft;
+use futures::future::Either;
 use futures::prelude::*;
-pub use log::Level::Debug;
-use log::{debug, error, log_enabled};
-use smol::blocking;
+use log::error;
+pub use log::{debug, log_enabled, Level::Debug};
 use smol::Async;
-use std::collections::HashMap;
+use smol::Timer;
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 use tokio::sync::mpsc::{channel, Receiver, Sender as ChannelSender};
 use tokio::sync::Notify;
 
 pub struct Peer {
     node_id: u64,
-    notify: Arc<Notify>,
+    log_notify: Notify,
+    heartbeat_notify: Arc<Notify>,
 }
 
 pub struct Sender {
@@ -38,10 +39,13 @@ impl Sender {
     }
 
     pub fn send_heartbeat(&self, body: Vec<u8>) -> RaftResult<()> {
-        panic!()
+        for p in &self.peers {
+            p.heartbeat_notify.notify()
+        }
+        Ok(())
     }
 
-    pub fn send(&self, index: u64, body: Vec<u8>) -> RaftResult<()> {
+    pub fn send_log(&self, index: u64, body: Vec<u8>) -> RaftResult<()> {
         let typ = body[0];
         {
             let mut v = self.last_buf.write().unwrap();
@@ -51,7 +55,7 @@ impl Sender {
         }
 
         for p in &self.peers {
-            p.notify.notify();
+            p.log_notify.notify();
         }
 
         let half = self.peers.len() / 2 + self.peers.len() % 2;
@@ -89,29 +93,31 @@ impl Sender {
 
         let peer = Arc::new(Peer {
             node_id: node_id,
-            notify: notify.clone(),
+            log_notify: notify.clone(),
         });
 
         let peer_job = peer.clone();
 
         let tx = self.tx.clone();
         let last_buf = self.last_buf.clone();
-        smol::Task::blocking(async move {
-            while !raft.is_stoped() {
-                if !raft.is_leader() {
-                    &peer_job.notify.notified().await;
-                }
+        std::thread::spawn(|| {
+            smol::run(async move {
+                while !raft.is_stoped() {
+                    if !raft.is_leader() {
+                        peer_job.log_notify.notified().await;
+                    }
 
-                let job_tx = tx.clone();
-                let buf = last_buf.clone();
+                    let job_tx = tx.clone();
+                    let buf = last_buf.clone();
 
-                if let Err(e) = Self::peer_job(raft.clone(), peer_job.clone(), job_tx, buf).await {
-                    //do some thing .....
-                    error!("peer job has err :{}", e);
+                    if let Err(e) =
+                        Self::peer_job(raft.clone(), peer_job.clone(), job_tx, buf).await
+                    {
+                        error!("peer job has err :{}", e);
+                    }
                 }
-            }
-        })
-        .detach();
+            })
+        });
         self.peers.push(peer);
     }
 
@@ -121,9 +127,8 @@ impl Sender {
         mut tx: ChannelSender<(u8, u64, RaftError)>,
         buf: Arc<RwLock<(u8, u64, Arc<Vec<u8>>)>>,
     ) -> RaftResult<()> {
-        let mut stream =
-            conver(Async::<TcpStream>::connect(raft.resolver.log_addr(&peer.node_id)?).await)?;
-
+        let addr = raft.resolver.log_addr(&peer.node_id)?;
+        let mut stream = timeout(500, Async::<TcpStream>::connect(addr)).await?;
         let last_info = || -> (u8, u64, Arc<Vec<u8>>) {
             let v = buf.read().unwrap();
             (v.0, v.1, v.2.clone())
@@ -135,14 +140,15 @@ impl Sender {
         };
 
         let mut resp = Vec::default();
-
+        let mut pre_value = (255, 0);
         loop {
             let (t, index, body) = last_info();
-
-            if index == 0 {
+            if (t, index) == pre_value {
                 peer.notify.notified().await;
                 continue;
             }
+
+            pre_value = (t, index);
 
             conver(stream.write(&u64::to_be_bytes(raft.id)).await)?;
             conver(stream.write(&u32::to_be_bytes(body.len() as u32)).await)?;
@@ -151,6 +157,7 @@ impl Sender {
             conver(stream.read_to_end(&mut resp).await)?;
 
             let re = RaftError::decode(&resp);
+
             match &re {
                 RaftError::Success => {
                     if is_current(t, index) {
@@ -200,105 +207,132 @@ impl Sender {
     }
 }
 
-// impl Sender {
-//     async fn write_entry(
-//         stream: &mut Async<TcpStream>,
-//         raft_id: u64,
-//         body: Vec<u8>,
-//     ) -> std::io::Result<()> {
-//         stream.write(&u64::to_be_bytes(raft_id)).await?;
-//         stream.write(&u32::to_be_bytes(body.len() as u32)).await?;
-//         stream.write(&body).await?;
-//         Ok(())
-//     }
-// }
+async fn timeout<T: std::fmt::Debug>(
+    millis: u64,
+    f: impl Future<Output = futures::io::Result<T>>,
+) -> RaftResult<T> {
+    futures::pin_mut!(f);
 
-// pub fn send(raft: Arc<Raft>, entry: &Entry) -> RaftResult<()> {
-//     let len = raft.replicas.len();
-//     if len == 0 {
-//         return Ok(());
-//     }
+    let dur = Duration::from_millis(millis);
+    match future::select(f, Timer::after(dur)).await {
+        Either::Left((out, _)) => match out {
+            Ok(t) => Ok(t),
+            Err(e) => Err(RaftError::NetError(e.to_string())),
+        },
+        Either::Right(_) => Err(RaftError::Timeout(millis)),
+    }
+}
 
-//     let data = Arc::new(entry.encode());
-//     let len = raft.replicas.len();
+pub fn send(raft: &Arc<Raft>, entry: &Entry) -> RaftResult<()> {
+    let len = raft.replicas.len();
+    if len == 0 {
+        return Ok(());
+    }
 
-//     let (tx, mut rx) = channel(len);
-//     smol::run(async {
-//         for i in 0..len {
-//             let entry = data.clone();
-//             let raft = raft.clone();
-//             let node_id = raft.replicas[i];
-//             let mut tx = tx.clone();
-//             smol::Task::spawn(async move {
-//                 let result = execute(node_id, raft, entry).await;
-//                 let _ = tx.try_send(result);
-//             })
-//             .detach();
-//         }
-//         drop(tx);
+    let data = Arc::new(entry.encode());
+    let len = raft.replicas.len();
 
-//         let mut need = len / 2;
+    let (tx, mut rx) = channel(len);
+    smol::run(async {
+        for i in 0..len {
+            let entry = data.clone();
+            let raft = raft.clone();
+            let node_id = raft.replicas[i];
+            let mut tx = tx.clone();
+            smol::Task::spawn(async move {
+                let result = execute(node_id, raft, entry).await;
+                let _ = tx.try_send(result);
+            })
+            .detach();
+        }
+        drop(tx);
 
-//         while let Some(res) = rx.recv().await {
-//             match res {
-//                 Err(e) => error!("submit log has err:[{:?}] entry:[{:?}]", e, entry),
-//                 Ok(_) => {
-//                     need -= 1;
-//                     if need == 0 {
-//                         return Ok(());
-//                     }
-//                 }
-//             }
-//         }
+        let mut need = len / 2;
 
-//         Err(RaftError::NotEnoughRecipient(
-//             len as u16 / 2,
-//             (len / 2 - need) as u16,
-//         ))
-//     })
-// }
+        while let Some(res) = rx.recv().await {
+            match res {
+                Err(e) => error!("submit log has err:[{:?}] entry:[{:?}]", e, entry),
+                Ok(_) => {
+                    need -= 1;
+                    if need == 0 {
+                        return Ok(());
+                    }
+                }
+            }
+        }
 
-// async fn execute(node_id: u64, raft: Arc<Raft>, body: Arc<Vec<u8>>) -> RaftResult<()> {
-//     let addr = if body[0] == entry_type::HEARTBEAT {
-//         raft.resolver.heartbeat_addr(&node_id)?
-//     } else {
-//         raft.resolver.log_addr(&node_id)?
-//     };
+        Err(RaftError::NotEnoughRecipient(
+            len as u16 / 2,
+            (len / 2 - need) as u16,
+        ))
+    })
+}
 
-//     let mut stream = conver(Async::<TcpStream>::connect(addr).await)?;
+async fn execute(node_id: u64, raft: Arc<Raft>, body: Arc<Vec<u8>>) -> RaftResult<()> {
+    let addr = if body[0] == entry_type::HEARTBEAT {
+        raft.resolver.heartbeat_addr(&node_id)?
+    } else {
+        raft.resolver.log_addr(&node_id)?
+    };
 
-//     conver(stream.write(&u64::to_be_bytes(raft.id)).await)?;
-//     conver(stream.write(&u32::to_be_bytes(body.len() as u32)).await)?;
-//     conver(stream.write(&body).await)?;
+    let mut stream = conver(Async::<TcpStream>::connect(addr).await)?;
 
-//     let mut resp = Vec::default();
-//     if let Err(e) = stream.read_to_end(&mut resp).await {
-//         return Err(RaftError::NetError(e.to_string()));
-//     };
+    conver(stream.write(&u64::to_be_bytes(raft.id)).await)?;
+    conver(stream.write(&u32::to_be_bytes(body.len() as u32)).await)?;
+    conver(stream.write(&body).await)?;
 
-//     if log_enabled!(Debug) {
-//         let e = Entry::decode((*body).clone()).unwrap();
-//         match &e {
-//             Entry::Heartbeat { .. } => {}
-//             _ => {
-//                 let e = RaftError::decode(&resp);
-//                 if RaftError::Success != e {
-//                     debug!(
-//                         "node_id:{} send:{:?} got :{:?}",
-//                         node_id,
-//                         Entry::decode((*body).clone()),
-//                         e,
-//                     );
-//                 }
-//             }
-//         }
-//     }
+    let mut resp = Vec::default();
+    if let Err(e) = stream.read_to_end(&mut resp).await {
+        return Err(RaftError::NetError(e.to_string()));
+    };
 
-//     let re = RaftError::decode(&resp);
+    if log_enabled!(Debug) {
+        let e = Entry::decode((*body).clone()).unwrap();
+        match &e {
+            Entry::Heartbeat { .. } => {}
+            _ => {
+                let e = RaftError::decode(&resp);
+                if RaftError::Success != e {
+                    debug!(
+                        "node_id:{} send:{:?} got :{:?}",
+                        node_id,
+                        Entry::decode((*body).clone()),
+                        e,
+                    );
+                }
+            }
+        }
+    }
 
-//     if let RaftError::Success = &re {
-//         return Ok(());
-//     }
+    let re = RaftError::decode(&resp);
 
-//     return Err(re);
-// }
+    if let RaftError::Success = &re {
+        return Ok(());
+    }
+
+    return Err(re);
+}
+
+#[test]
+fn test_time_out() {
+    // let v: RaftResult<()> = smol::block_on(async {
+    //     timeout(500, async {
+    //         std::thread::sleep(Duration::from_millis(200));
+    //         Ok(())
+    //     })
+    //     .await
+    // });
+    // assert!(v.is_ok());
+
+    std::thread::spawn(|| {
+        smol::run(async {
+            println!("1231231................................");
+            Timer::after(Duration::from_secs(1)).await;
+            println!("1231231");
+        })
+    });
+
+    std::thread::sleep(Duration::from_secs(12))
+
+    // assert!(v.is_err());
+}
