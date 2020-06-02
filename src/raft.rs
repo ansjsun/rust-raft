@@ -390,7 +390,7 @@ impl Raft {
 
         let raft = self.clone();
         //this job for heartbeat . leader to send , follwer to check heartbeat time
-        std::thread::spawn(|| async move {
+        smol::Task::blocking(async move {
             while !raft.stopd.load(SeqCst) {
                 if raft.is_leader() {
                     let (_, committed, applied) = raft.store.info();
@@ -425,19 +425,21 @@ impl Raft {
 
                         raft.leader.store(0, SeqCst);
 
-                        if let Err(e) = raft.to_voter(term).await {
-                            error!("send vote has err:{:?}", e);
-                            raft.to_follower();
-                        } else {
-                            if let Err(e) = raft.to_leader().await {
-                                error!("raft:{} to leader has err:{}", raft.conf.node_id, e);
-                                raft.to_follower();
-                            }
-                        }
+                        raft.to_voter(term).await;
+                        // if let Err(e) = raft.to_voter(term).await {
+                        //     error!("send vote has err:{:?}", e);
+                        //     raft.to_follower();
+                        // } else {
+                        //     if let Err(e) = raft.to_leader().await {
+                        //         error!("raft:{} to leader has err:{}", raft.conf.node_id, e);
+                        //         raft.to_follower();
+                        //     }
+                        // }
                     }
                 }
                 sleep(Duration::from_millis(raft.conf.heartbeate_ms));
             }
-        });
+        })
+        .detach();
     }
 }

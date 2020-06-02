@@ -7,9 +7,11 @@ use log::{debug, error, log_enabled, warn, Level::Debug};
 use smol::Async;
 use smol::Timer;
 use std::net::TcpStream;
+use std::sync::mpsc::channel;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::sync::mpsc::channel;
+
+type Pool = deadpool::managed::Pool<Connection, RaftError>;
 
 struct Connection {
     stream: Async<TcpStream>,
@@ -59,7 +61,8 @@ impl Manager {
     }
 }
 
-impl r2d2::ManageConnection for Manager {
+#[async_trait]
+impl deadpool::managed::Manager<Computer, Error> for Manager {
     type Connection = Connection;
     type Error = RaftError;
 
@@ -71,6 +74,7 @@ impl r2d2::ManageConnection for Manager {
         };
 
         smol::run(async move {
+            println!("to create ...by addr{}", addr);
             Ok(Connection {
                 len: [0; 4],
                 buf: Vec::with_capacity(256),
@@ -115,7 +119,19 @@ impl Peer {
                 _ => return Err(RaftError::NotReady),
             }
         } else {
-            self.log_pool.get().unwrap()
+            let mut err_times = 0;
+            loop {
+                match self.log_pool.get() {
+                    Ok(conn) => break conn,
+                    Err(e) => {
+                        warn!("take connection has err:{}", e);
+                        if err_times > 10 {
+                            return Err(RaftError::NetError(e.to_string()));
+                        }
+                    }
+                }
+                err_times += 1;
+            }
         };
         //write req
         conn.write_body(&self.raft_id, &*body)
@@ -203,20 +219,18 @@ impl Sender {
     pub async fn send_log(&self, body: Vec<u8>) -> RaftResult<()> {
         let body = Arc::new(body);
         let peers = self.peers.read().unwrap();
-        let (tx, mut rx) = channel(peers.len());
+        let (mut tx, mut rx) = channel();
 
         for p in &*peers {
             let peer = p.clone();
             let body = body.clone();
             let mut tx = tx.clone();
-            println!("______________+++++++++++++++++=__");
-            smol::Task::spawn(async move {
-                println!("________________");
+            smol::Task::blocking(async move {
                 if let Err(e) = match peer.send(body).await {
-                    Ok(e) => tx.try_send(e),
+                    Ok(e) => tx.send(e),
                     Err(e) => {
                         error!("send log has err:{:?}", e);
-                        tx.try_send(e)
+                        tx.send(e)
                     }
                 } {
                     debug!("send to channel has err:{:?}", e);
@@ -229,7 +243,7 @@ impl Sender {
 
         let mut ok = 0;
         let mut err = 0;
-        while let Some(e) = rx.recv().await {
+        while let Ok(e) = rx.recv_timeout(Duration::from_millis(5000)) {
             println!("recive ........{:?}", e);
             if e == RaftError::Success {
                 ok += 1;
@@ -246,20 +260,20 @@ impl Sender {
                 }
             }
         }
-        return Err(RaftError::Timeout(0)); //TODO full time
+        return Err(RaftError::Timeout(5000)); //TODO full time
     }
 
     pub fn add_peer(&self, node_id: u64, raft: Arc<Raft>) {
         let heart_pool = r2d2::Pool::builder()
             .connection_timeout(Duration::from_millis(500))
-            .max_size(1)
-            .min_idle(Some(0))
+            .max_size(10)
+            // .min_idle(Some(0))
             .build(Manager::new(entry_type::HEARTBEAT, node_id, raft.clone()))
             .unwrap();
         let log_pool = r2d2::Pool::builder()
             .connection_timeout(Duration::from_millis(500))
-            .max_size(5)
-            .min_idle(Some(0))
+            .max_size(10)
+            // .min_idle(Some(0))
             .build(Manager::new(entry_type::COMMIT, node_id, raft.clone()))
             .unwrap();
 

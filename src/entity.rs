@@ -45,13 +45,13 @@ pub enum Entry {
 
 async fn read_u32<S: AsyncReadExt + Unpin>(mut stream: S) -> RaftResult<u32> {
     let mut output = [0u8; 4];
-    conver(stream.read_exact(&mut output[..]).await)?;
+    conver(stream.read(&mut output[..]).await)?;
     Ok(u32::from_be_bytes(output))
 }
 
 async fn read_u64<S: AsyncReadExt + Unpin>(mut stream: S) -> RaftResult<u64> {
     let mut output = [0u8; 8];
-    conver(stream.read_exact(&mut output[..]).await)?;
+    conver(stream.read(&mut output[..]).await)?;
     Ok(u64::from_be_bytes(output))
 }
 
@@ -198,7 +198,7 @@ impl Entry {
         let len = read_u32(&mut stream).await?;
         let mut buf: Vec<u8> = Vec::with_capacity(len as usize);
         buf.resize_with(len as usize, Default::default);
-        conver(stream.read_exact(&mut buf).await)?;
+        conver(stream.read(&mut buf).await)?;
         Ok((raft_id, Self::decode(buf)?))
     }
 }
