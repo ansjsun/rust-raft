@@ -260,13 +260,13 @@ impl Raft {
 
 //these method for  replication
 impl Raft {
-    pub fn try_to_leader(self: &Arc<Raft>) -> RaftResult<bool> {
-        if let Err(e) = Raft::to_voter(self.term.load(SeqCst), self) {
+    pub async fn try_to_leader(self: &Arc<Raft>) -> RaftResult<bool> {
+        if let Err(e) = self.to_voter(self.term.load(SeqCst)).await {
             error!("send vote has err:{:?}", e);
             self.to_follower();
             return Ok(false);
         } else {
-            if let Err(e) = Raft::to_leader(self) {
+            if let Err(e) = self.to_leader().await {
                 error!("raft:{} to leader has err:{}", self.conf.node_id, e);
                 self.to_follower();
                 return Err(e);
@@ -276,38 +276,39 @@ impl Raft {
     }
 
     //put empty log
-    fn to_leader(raft: &Arc<Raft>) -> RaftResult<()> {
-        info!("raft_node:{} to leader ", raft.node_id);
+    async fn to_leader(self: &Arc<Raft>) -> RaftResult<()> {
+        info!("raft_node:{} to leader ", self.node_id);
         if let Entry::LeaderChange {
             leader,
             term,
             index,
         } = {
-            let mut state = raft.state.write().unwrap();
+            let mut state = self.state.write().unwrap();
             if let RaftState::Leader = *state {
                 return Ok(());
             };
 
             *state = RaftState::Leader;
-            raft.term.fetch_add(1, SeqCst);
-            raft.last_heart.store(current_millis(), SeqCst);
-            let index = raft.store.last_index();
+            self.term.fetch_add(1, SeqCst);
+            self.last_heart.store(current_millis(), SeqCst);
+            let index = self.store.last_index();
             let lc = Entry::LeaderChange {
-                leader: raft.conf.node_id,
-                term: raft.term.load(SeqCst),
+                leader: self.conf.node_id,
+                term: self.term.load(SeqCst),
                 index: index,
             };
 
-            send(raft, &lc)?;
+            let body = lc.encode();
+            self.sender.send_log(body).await?;
             lc
         } {
-            raft.sm.apply_leader_change(leader, term, index);
+            self.sm.apply_leader_change(leader, term, index);
         }
 
         Ok(())
     }
 
-    fn to_follower(&self) {
+    pub fn to_follower(&self) {
         info!("raft:{} to follower ", self.node_id);
         let mut state = self.state.write().unwrap();
         if let RaftState::Follower = *state {
@@ -318,32 +319,34 @@ impl Raft {
         self.applied_notify.notify();
     }
 
-    fn to_voter(term: u64, raft: &Arc<Raft>) -> RaftResult<()> {
-        info!("raft:{} to voter ", raft.conf.node_id);
+    async fn to_voter(self: &Arc<Raft>, term: u64) -> RaftResult<()> {
+        info!("raft:{} to voter ", self.conf.node_id);
 
-        if raft.voted.lock().unwrap().update(
-            raft.conf.node_id,
-            raft.term.load(SeqCst),
-            current_millis() + raft.conf.heartbeate_ms,
+        if self.voted.lock().unwrap().update(
+            self.conf.node_id,
+            self.term.load(SeqCst),
+            current_millis() + self.conf.heartbeate_ms,
         ) {
-            let mut state = raft.state.write().unwrap();
+            let mut state = self.state.write().unwrap();
             *state = RaftState::Candidate;
         } else {
             // found myself voting in this term
             return Err(RaftError::VoteNotAllow);
         }
 
-        raft.last_heart.store(current_millis(), SeqCst);
+        self.last_heart.store(current_millis(), SeqCst);
 
-        let index = raft.store.last_index();
-        send(
-            raft,
-            &Entry::Vote {
-                term: term,
-                leader: raft.conf.node_id,
-                committed: index,
-            },
-        )
+        let index = self.store.last_index();
+        self.sender
+            .send_log(
+                Entry::Vote {
+                    term: term,
+                    leader: self.conf.node_id,
+                    committed: index,
+                }
+                .encode(),
+            )
+            .await
     }
 }
 
@@ -387,7 +390,7 @@ impl Raft {
 
         let raft = self.clone();
         //this job for heartbeat . leader to send , follwer to check heartbeat time
-        smol::Task::blocking(async move {
+        std::thread::spawn(|| async move {
             while !raft.stopd.load(SeqCst) {
                 if raft.is_leader() {
                     let (_, committed, applied) = raft.store.info();
@@ -422,11 +425,11 @@ impl Raft {
 
                         raft.leader.store(0, SeqCst);
 
-                        if let Err(e) = Raft::to_voter(term, &raft) {
+                        if let Err(e) = raft.to_voter(term).await {
                             error!("send vote has err:{:?}", e);
                             raft.to_follower();
                         } else {
-                            if let Err(e) = Raft::to_leader(&raft) {
+                            if let Err(e) = raft.to_leader().await {
                                 error!("raft:{} to leader has err:{}", raft.conf.node_id, e);
                                 raft.to_follower();
                             }
@@ -435,7 +438,6 @@ impl Raft {
                 }
                 sleep(Duration::from_millis(raft.conf.heartbeate_ms));
             }
-        })
-        .detach();
+        });
     }
 }

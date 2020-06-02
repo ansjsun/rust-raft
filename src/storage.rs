@@ -87,9 +87,8 @@ impl RaftLog {
 
     pub fn iter(
         &self,
-        stream: &mut Async<TcpStream>,
         mut index: u64,
-        execute: impl Fn(&mut Async<TcpStream>, Vec<u8>) -> RaftResult<bool>,
+        mut execute: impl FnMut(Vec<u8>) -> RaftResult<bool>,
     ) -> RaftResult<()> {
         let _v = self.lock_truncation.lock().unwrap();
 
@@ -132,7 +131,7 @@ impl RaftLog {
                     offset += 4;
                     let mut buf = vec![0; dl as usize];
                     conver(file.read_exact(&mut buf))?;
-                    execute(stream, buf)?;
+                    execute(buf)?;
                     offset += dl;
                     if offset == file_len {
                         break;
@@ -144,7 +143,7 @@ impl RaftLog {
 
         while index < self.last_applied() {
             let v = self.log_mem.read().unwrap().get(index).encode();
-            if !execute(stream, v)? {
+            if !execute(v)? {
                 return Ok(());
             }
             index += 1;
