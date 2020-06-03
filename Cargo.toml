@@ -15,4 +15,4 @@ futures-io = { version = "0.3.5", default-features = false, features = ["std"] }
 tokio = { version = "0.2", features = ["sync"] }
 rand = "0.7.3"
 deadpool = "0.5.1"
-async_trait = "0.0.1"
+async-trait = "0.1.32"

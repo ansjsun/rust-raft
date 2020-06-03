@@ -3,7 +3,7 @@ use futures_util::io::AsyncReadExt;
 
 pub trait Decode {
     type Item;
-    fn decode(buf: Vec<u8>) -> RaftResult<Self::Item>;
+    fn decode(buf: &[u8]) -> RaftResult<Self::Item>;
 }
 
 pub trait Encode {
@@ -63,7 +63,7 @@ fn read_u64_slice(s: &[u8], start: usize) -> u64 {
 impl Decode for Entry {
     type Item = Self;
     #[warn(unreachable_patterns)]
-    fn decode(buf: Vec<u8>) -> RaftResult<Self::Item> {
+    fn decode(buf: &[u8]) -> RaftResult<Self::Item> {
         if buf.len() == 0 {
             return Err(RaftError::IncompleteErr);
         }
@@ -199,7 +199,7 @@ impl Entry {
         let mut buf: Vec<u8> = Vec::with_capacity(len as usize);
         buf.resize_with(len as usize, Default::default);
         conver(stream.read(&mut buf).await)?;
-        Ok((raft_id, Self::decode(buf)?))
+        Ok((raft_id, Self::decode(&buf)?))
     }
 }
 

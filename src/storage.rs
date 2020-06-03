@@ -409,7 +409,7 @@ impl LogFile {
             if len == offset + dl {
                 let mut buf = vec![0; dl as usize];
                 file.read_exact(&mut buf).unwrap();
-                return Ok((offset, Entry::decode(buf)?));
+                return Ok((offset, Entry::decode(&buf)?));
             } else if len < offset + dl {
                 if validate {
                     return Err(RaftError::LogFileInvalid(file_id));
@@ -483,7 +483,7 @@ pub fn validate_log_file(path: std::path::PathBuf, check: bool) -> RaftResult<u6
         conver(file.read_exact(&mut buf))?;
         offset += buf.len();
 
-        let e = Entry::decode(buf)?;
+        let e = Entry::decode(&buf)?;
         pre_index += 1;
         if check {
             let (_, index, _) = e.info();

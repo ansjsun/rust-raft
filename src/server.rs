@@ -115,7 +115,7 @@ impl Server {
                 Ok((stream, _)) => {
                     println!("1231231231231231----------------------");
                     let rs = rs.clone();
-                    Task::spawn(log(rs, stream)).detach();
+                    log(rs, stream).await;
                 }
                 Err(e) => error!("listener has err:{}", e.to_string()),
             }
@@ -214,6 +214,7 @@ impl RaftServer {
 
 async fn heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) {
     loop {
+        println!("===============================get result ,");
         if let Err(e) = match match Entry::decode_stream(&mut stream).await {
             Ok((raft_id, entry)) => rs.heartbeat(raft_id, entry),
             Err(e) => Err(e),
@@ -229,13 +230,14 @@ async fn heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) {
             }
         } {
             error!("send heartbeat result to client has err:{}", e);
+            break;
         };
     }
 }
 
 async fn log(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) {
     loop {
-        println!("12311231");
+        println!("===============================get result ");
         if let Err(e) = match match Entry::decode_stream(&mut stream).await {
             Ok((raft_id, entry)) => rs.log(raft_id, entry),
             Err(e) => Err(e),
