@@ -4,7 +4,8 @@ use log::{error, info};
 use smol::{Async, Task};
 use std::collections::{HashMap, HashSet};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{atomic::Ordering::SeqCst, Arc, RwLock};
+use std::sync::{atomic::Ordering::SeqCst, Arc};
+use tokio::sync::RwLock;
 
 pub struct Server {
     conf: Arc<Config>,
@@ -36,7 +37,7 @@ impl Server {
 
         let s = self.clone();
         smol::Task::blocking(async move {
-            s._start_replicate(s.conf.replicate_port).await;
+            s._start_log(s.conf.replicate_port).await;
         })
         .detach();
 
@@ -103,7 +104,7 @@ impl Server {
         }
     }
 
-    pub async fn _start_replicate(&self, port: u16) {
+    pub async fn _start_log(&self, port: u16) {
         let rs = self.raft_server.clone();
         let listener = match Async::<TcpListener>::bind(format!("0.0.0.0:{}", port)) {
             Ok(l) => l,
@@ -115,7 +116,7 @@ impl Server {
                 Ok((stream, _)) => {
                     println!("1231231231231231----------------------");
                     let rs = rs.clone();
-                    log(rs, stream).await;
+                    // Task::spawn(log(rs, stream).await).detach();
                 }
                 Err(e) => error!("listener has err:{}", e.to_string()),
             }
@@ -191,8 +192,8 @@ impl RaftServer {
         }
     }
 
-    fn heartbeat(&self, raft_id: u64, entry: Entry) -> RaftResult<()> {
-        let raft = match self.rafts.read().unwrap().get(&raft_id) {
+    async fn heartbeat(&self, raft_id: u64, entry: Entry) -> RaftResult<()> {
+        let raft = match self.rafts.read().await.get(&raft_id) {
             Some(v) => v.clone(),
             None => return Err(RaftError::RaftNotFound(raft_id)),
         };
@@ -213,47 +214,45 @@ impl RaftServer {
 }
 
 async fn heartbeat(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) {
-    loop {
-        println!("===============================get result ,");
-        if let Err(e) = match match Entry::decode_stream(&mut stream).await {
-            Ok((raft_id, entry)) => rs.heartbeat(raft_id, entry),
-            Err(e) => Err(e),
-        } {
-            Ok(()) => stream.write(SUCCESS).await,
-            Err(e) => {
-                let result = e.encode();
-                if let Err(e) = stream.write(&u32::to_be_bytes(result.len() as u32)).await {
-                    Err(e)
-                } else {
-                    stream.write(&result).await
-                }
+    // loop {
+    println!("===============================get result ,");
+    if let Err(e) = match match Entry::decode_stream(&mut stream).await {
+        Ok((raft_id, entry)) => rs.heartbeat(raft_id, entry).await,
+        Err(e) => Err(e),
+    } {
+        Ok(()) => stream.write(SUCCESS).await,
+        Err(e) => {
+            let result = e.encode();
+            if let Err(e) = stream.write(&u32::to_be_bytes(result.len() as u32)).await {
+                Err(e)
+            } else {
+                stream.write(&result).await
             }
-        } {
-            error!("send heartbeat result to client has err:{}", e);
-            break;
-        };
-    }
+        }
+    } {
+        error!("send heartbeat result to client has err:{}", e);
+    };
+    // }
 }
 
 async fn log(rs: Arc<RaftServer>, mut stream: Async<TcpStream>) {
-    loop {
-        println!("===============================get result ");
-        if let Err(e) = match match Entry::decode_stream(&mut stream).await {
-            Ok((raft_id, entry)) => rs.log(raft_id, entry),
-            Err(e) => Err(e),
-        } {
-            Ok(()) => stream.write(SUCCESS).await,
-            Err(e) => {
-                let result = e.encode();
-                if let Err(e) = stream.write(&u32::to_be_bytes(result.len() as u32)).await {
-                    Err(e)
-                } else {
-                    stream.write(&result).await
-                }
+    // loop {
+    println!("===============================get result ");
+    if let Err(e) = match match Entry::decode_stream(&mut stream).await {
+        Ok((raft_id, entry)) => rs.log(raft_id, entry),
+        Err(e) => Err(e),
+    } {
+        Ok(()) => stream.write(SUCCESS).await,
+        Err(e) => {
+            let result = e.encode();
+            if let Err(e) = stream.write(&u32::to_be_bytes(result.len() as u32)).await {
+                Err(e)
+            } else {
+                stream.write(&result).await
             }
-        } {
-            error!("send log result to client has err:{}", e);
-            break;
-        };
-    }
+        }
+    } {
+        error!("send log result to client has err:{}", e);
+    };
+    // }
 }

@@ -8,7 +8,8 @@ use std::io;
 use std::io::prelude::*;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
+use tokio::sync::{Mutex, RwLock};
 
 static FILE_START: &str = "raft_";
 static FILE_END: &str = ".log";
@@ -85,16 +86,16 @@ impl RaftLog {
         })
     }
 
-    pub fn iter(
+    pub async fn iter(
         &self,
         mut index: u64,
         mut execute: impl FnMut(Vec<u8>) -> RaftResult<bool>,
     ) -> RaftResult<()> {
-        let _v = self.lock_truncation.lock().unwrap();
+        let _v = self.lock_truncation.lock().await;
 
-        if self.log_mem.read().unwrap().offset >= index {
-            let ids = self.log_file.read().unwrap().file_ids.clone();
-            let dir = self.log_file.read().unwrap().dir.clone();
+        if self.log_mem.read().await.offset >= index {
+            let ids = self.log_file.read().await.file_ids.clone();
+            let dir = self.log_file.read().await.dir.clone();
 
             let mut offset = 0;
             for id in &ids {
@@ -141,8 +142,8 @@ impl RaftLog {
             }
         }
 
-        while index < self.last_applied() {
-            let v = self.log_mem.read().unwrap().get(index).encode();
+        while index < self.last_applied().await {
+            let v = self.log_mem.read().await.get(index).encode();
             if !execute(v)? {
                 return Ok(());
             }
@@ -151,21 +152,21 @@ impl RaftLog {
         Ok(())
     }
 
-    pub fn info(&self) -> (u64, u64, u64) {
-        let mem = self.log_mem.read().unwrap();
+    pub async fn info(&self) -> (u64, u64, u64) {
+        let mem = self.log_mem.read().await;
         (mem.term, mem.committed, mem.applied)
     }
 
-    pub fn last_index(&self) -> u64 {
-        self.log_mem.read().unwrap().committed
+    pub async fn last_index(&self) -> u64 {
+        self.log_mem.read().await.committed
     }
 
-    pub fn last_applied(&self) -> u64 {
-        self.log_mem.read().unwrap().applied
+    pub async fn last_applied(&self) -> u64 {
+        self.log_mem.read().await.applied
     }
 
-    pub fn last_term(&self) -> u64 {
-        self.log_mem.read().unwrap().term
+    pub async fn last_term(&self) -> u64 {
+        self.log_mem.read().await.term
     }
 
     //this method to store entry to mem  by vec .
@@ -247,7 +248,7 @@ impl RaftLog {
             let bs = entry.encode();
             let (_, index, _) = entry.info();
 
-            let mut file = self.log_file.write().unwrap();
+            let mut file = self.log_file.write().await;
 
             if let Err(err) = file.writer.write(&u32::to_be_bytes(bs.len() as u32)) {
                 return Err(RaftError::IOError(err.to_string()));
@@ -279,7 +280,7 @@ impl RaftLog {
             )
         };
 
-        self.log_mem.write().unwrap().applied = index;
+        self.log_mem.write().await.applied = index;
 
         apply_result
     }

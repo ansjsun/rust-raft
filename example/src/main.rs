@@ -10,25 +10,25 @@ fn main() {
     );
 
     debug!("start............");
+
+    let server1 = Arc::new(Server::new(make_config(1), make_resolver(), SM { id: 1 })).start();
+    let server2 = Arc::new(Server::new(make_config(2), make_resolver(), SM { id: 2 })).start();
+    let server3 = Arc::new(Server::new(make_config(3), make_resolver(), SM { id: 3 })).start();
+
+    let replicas = &vec![1, 2, 3];
+
+    let raft1 = server1.create_raft(1, 0, &replicas).unwrap();
+    let _raft2 = server2.create_raft(1, 0, &replicas).unwrap();
+    let _raft3 = server3.create_raft(1, 0, &replicas).unwrap();
+    let mut times = 0;
+
     smol::run(async {
-        let server1 = Arc::new(Server::new(make_config(1), make_resolver(), SM { id: 1 })).start();
-        let server2 = Arc::new(Server::new(make_config(2), make_resolver(), SM { id: 2 })).start();
-        let server3 = Arc::new(Server::new(make_config(3), make_resolver(), SM { id: 3 })).start();
-
-        let replicas = &vec![1, 2, 3];
-
-        let raft1 = server1.create_raft(1, 0, &replicas).unwrap();
-        let _raft2 = server2.create_raft(1, 0, &replicas).unwrap();
-        let _raft3 = server3.create_raft(1, 0, &replicas).unwrap();
-        let mut times = 0;
-        println!("1231231");
         while !raft1.is_leader() {
             raft1.try_to_leader().await.unwrap();
             std::thread::sleep(std::time::Duration::from_secs(1));
             times += 1;
             info!("wait raft1 to leader times:{}", times);
         }
-
         for i in 0..1000000 {
             raft1
                 .submit(unsafe { format!("commit: {}", i + 1).as_mut_vec().clone() })
@@ -71,9 +71,9 @@ impl StateMachine for SM {
 
 fn make_resolver() -> DefResolver {
     let mut def = DefResolver::new();
-    def.add_node(1, String::from("127.0.0.1"), 10000, 10001);
-    def.add_node(2, String::from("127.0.0.1"), 20000, 20001);
-    def.add_node(3, String::from("127.0.0.1"), 30000, 30001);
+    def.add_node(1, String::from("0.0.0.0"), 10000, 10001);
+    def.add_node(2, String::from("0.0.0.0"), 20000, 20001);
+    def.add_node(3, String::from("0.0.0.0"), 30000, 30001);
     def
 }
 
