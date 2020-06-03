@@ -1,5 +1,5 @@
 [package]
-name = "rust4rs"
+name = "raft4rs"
 version = "0.1.0"
 authors = ["Ansj <ansj-sun@163.com>"]
 edition = "2018"
