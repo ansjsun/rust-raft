@@ -8,11 +8,10 @@ edition = "2018"
 [dependencies]
 log = "0.4"
 thiserror = "1.0.19"
-smol = { version = "0.1", features = ["tokio02"] }
 futures = { version = "0.3.5", default-features = false, features = ["std"] }
 futures-util = { version = "0.3.5", default-features = false, features = ["std"] }
 futures-io = { version = "0.3.5", default-features = false, features = ["std"] }
-tokio = { version = "0.2", features = ["sync"] }
+async-std = { version = "1.6.0", features = ["default","unstable"]}
 rand = "0.7.3"
 deadpool = "0.5.1"
 async-trait = "0.1.32"

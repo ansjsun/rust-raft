@@ -13,4 +13,5 @@ path = "src/main.rs"
 log = "0.4"
 env_logger = "0.7.1"
 rust4rs = { path = "..", version = "0.1.0" }
-smol = { version = "0.1", features = ["tokio02"] }
+async-std = { version = "1.6.0", features = ["default","unstable"]}
+

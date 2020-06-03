@@ -1,15 +1,13 @@
 use crate::entity::*;
 use crate::error::*;
 use crate::state_machine::SM;
+use async_std::sync::{Mutex, RwLock};
 use log::warn;
-use smol::Async;
 use std::fs;
 use std::io;
 use std::io::prelude::*;
-use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
 
 static FILE_START: &str = "raft_";
 static FILE_END: &str = ".log";
@@ -171,14 +169,14 @@ impl RaftLog {
 
     //this method to store entry to mem  by vec .
     //if vec length gather conf max log num  , it will truncation to min log num , but less than apllied index
-    pub fn commit(
+    pub async fn commit(
         &self,
         pre_term: u64,
         term: u64,
         mut index: u64,
         cmd: Vec<u8>,
     ) -> RaftResult<u64> {
-        let mut mem = self.log_mem.write().unwrap();
+        let mut mem = self.log_mem.write().await;
 
         if mem.term > term {
             return Err(RaftError::TermLess);
@@ -232,9 +230,9 @@ impl RaftLog {
     //if this function has err ,Means that raft may not work anymore
     // If an IO error, such as insufficient disk space, the data will be unclean. Or an unexpected error occurred
     //return result<has_next>
-    pub fn apply(&self, sm: &SM, target_applied: u64) -> RaftResult<()> {
+    pub async fn apply(&self, sm: &SM, target_applied: u64) -> RaftResult<()> {
         let (index, apply_result) = {
-            let mem = self.log_mem.read().unwrap();
+            let mem = self.log_mem.read().await;
             if mem.applied >= target_applied {
                 return Ok(());
             }
@@ -274,7 +272,7 @@ impl RaftLog {
                         index,
                         commond,
                         ..
-                    } => sm.apply(term, index, commond),
+                    } => sm.apply(&term, &index, &commond),
                     _ => panic!("not support!!!!!!"),
                 },
             )

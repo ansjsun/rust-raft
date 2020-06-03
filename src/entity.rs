@@ -1,5 +1,6 @@
 use crate::error::{conver, RaftError, RaftResult};
-use futures_util::io::AsyncReadExt;
+use async_std::net::TcpStream;
+use async_std::prelude::*;
 
 pub trait Decode {
     type Item;
@@ -43,15 +44,15 @@ pub enum Entry {
     },
 }
 
-async fn read_u32<S: AsyncReadExt + Unpin>(mut stream: S) -> RaftResult<u32> {
+async fn read_u32(stream: &mut TcpStream) -> RaftResult<u32> {
     let mut output = [0u8; 4];
-    conver(stream.read(&mut output[..]).await)?;
+    conver(stream.read_exact(&mut output[..]).await)?;
     Ok(u32::from_be_bytes(output))
 }
 
-async fn read_u64<S: AsyncReadExt + Unpin>(mut stream: S) -> RaftResult<u64> {
+async fn read_u64(stream: &mut TcpStream) -> RaftResult<u64> {
     let mut output = [0u8; 8];
-    conver(stream.read(&mut output[..]).await)?;
+    conver(stream.read_exact(&mut output[..]).await)?;
     Ok(u64::from_be_bytes(output))
 }
 
@@ -193,12 +194,12 @@ impl Entry {
         }
     }
 
-    pub async fn decode_stream<S: AsyncReadExt + Unpin>(mut stream: S) -> RaftResult<(u64, Self)> {
-        let raft_id = read_u64(&mut stream).await?;
-        let len = read_u32(&mut stream).await?;
+    pub async fn decode_stream(stream: &mut TcpStream) -> RaftResult<(u64, Self)> {
+        let raft_id = read_u64(stream).await?;
+        let len = read_u32(stream).await?;
         let mut buf: Vec<u8> = Vec::with_capacity(len as usize);
         buf.resize_with(len as usize, Default::default);
-        conver(stream.read(&mut buf).await)?;
+        conver(stream.read_exact(&mut buf).await)?;
         Ok((raft_id, Self::decode(&buf)?))
     }
 }

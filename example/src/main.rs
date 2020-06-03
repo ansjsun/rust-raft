@@ -1,33 +1,32 @@
+use async_std::task;
 use log::{debug, info};
 use rust4rs::{entity::Config, error::*, server::Server, state_machine::*};
 use std::sync::Arc;
 
 fn main() {
-    env_logger::init_from_env(
-        env_logger::Env::default()
-            .filter_or("debug", "trace")
-            .write_style_or("auto", "always"),
-    );
+    task::block_on(async {
+        env_logger::init_from_env(
+            env_logger::Env::default()
+                .filter_or("MY_LOG_LEVEL", "info")
+                .write_style_or("auto", "always"),
+        );
 
-    debug!("start............");
+        debug!("start............");
 
-    let server1 = Arc::new(Server::new(make_config(1), make_resolver(), SM { id: 1 })).start();
-    let server2 = Arc::new(Server::new(make_config(2), make_resolver(), SM { id: 2 })).start();
-    let server3 = Arc::new(Server::new(make_config(3), make_resolver(), SM { id: 3 })).start();
+        let server1 = Arc::new(Server::new(make_config(1), make_resolver(), SM { id: 1 })).start();
+        let server2 = Arc::new(Server::new(make_config(2), make_resolver(), SM { id: 2 })).start();
+        let server3 = Arc::new(Server::new(make_config(3), make_resolver(), SM { id: 3 })).start();
 
-    let replicas = &vec![1, 2, 3];
+        let replicas = &vec![1, 2, 3];
 
-    let raft1 = server1.create_raft(1, 0, &replicas).unwrap();
-    let _raft2 = server2.create_raft(1, 0, &replicas).unwrap();
-    let _raft3 = server3.create_raft(1, 0, &replicas).unwrap();
-    let mut times = 0;
+        let raft1 = server1.create_raft(1, 0, &replicas).await.unwrap();
+        let _raft2 = server2.create_raft(1, 0, &replicas).await.unwrap();
+        let _raft3 = server3.create_raft(1, 0, &replicas).await.unwrap();
 
-    smol::run(async {
-        while !raft1.is_leader() {
+        while !raft1.is_leader().await {
             raft1.try_to_leader().await.unwrap();
             std::thread::sleep(std::time::Duration::from_secs(1));
-            times += 1;
-            info!("wait raft1 to leader times:{}", times);
+            info!("wait raft1 to leader times");
         }
         for i in 0..1000000 {
             raft1
@@ -35,9 +34,9 @@ fn main() {
                 .await
                 .unwrap();
         }
-    });
 
-    std::thread::sleep(std::time::Duration::from_secs(10000));
+        std::thread::sleep(std::time::Duration::from_secs(10000));
+    });
 }
 
 struct SM {
@@ -46,13 +45,15 @@ struct SM {
 
 impl StateMachine for SM {
     fn apply(&self, term: &u64, index: &u64, command: &[u8]) -> RaftResult<()> {
-        println!(
-            "apply {} term:{} index:{} command:{:?}",
-            self.id,
-            term,
-            index,
-            String::from_utf8_lossy(command)
-        );
+        if index % 10000 == 0 {
+            println!(
+                "apply {} term:{} index:{} command:{:?}",
+                self.id,
+                term,
+                index,
+                String::from_utf8_lossy(command)
+            );
+        }
         Ok(())
     }
     fn apply_member_change(&self, t: CommondType, index: u64) {
@@ -71,9 +72,9 @@ impl StateMachine for SM {
 
 fn make_resolver() -> DefResolver {
     let mut def = DefResolver::new();
-    def.add_node(1, String::from("0.0.0.0"), 10000, 10001);
-    def.add_node(2, String::from("0.0.0.0"), 20000, 20001);
-    def.add_node(3, String::from("0.0.0.0"), 30000, 30001);
+    def.add_node(1, String::from("127.0.0.1"), 10000, 10001);
+    def.add_node(2, String::from("127.0.0.1"), 20000, 20001);
+    def.add_node(3, String::from("127.0.0.1"), 30000, 30001);
     def
 }
 
