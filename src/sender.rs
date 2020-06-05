@@ -227,9 +227,11 @@ impl Sender {
     }
 
     pub async fn send_heartbeat(&self, body: Vec<u8>) {
-        let body = Arc::new(body);
-
         let peers = self.peers.read().await;
+        if peers.len() == 0 {
+            return;
+        }
+        let body = Arc::new(body);
         for p in &*peers {
             let body = body.clone();
             let peer = p.clone();
@@ -242,8 +244,12 @@ impl Sender {
     }
 
     pub async fn send_log(&self, body: Vec<u8>) -> RaftResult<()> {
-        let body = Arc::new(body);
         let peers = self.peers.read().await;
+        if peers.len() == 0 {
+            return Ok(());
+        }
+
+        let body = Arc::new(body);
 
         let (tx, rx) = channel(peers.len());
 
