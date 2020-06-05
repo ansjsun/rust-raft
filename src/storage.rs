@@ -2,6 +2,7 @@ use crate::entity::*;
 use crate::error::*;
 use crate::state_machine::SM;
 use async_std::sync::{Mutex, RwLock};
+use log::error;
 use log::warn;
 use std::fs;
 use std::io;
@@ -229,58 +230,49 @@ impl RaftLog {
 
     //if this function has err ,Means that raft may not work anymore
     // If an IO error, such as insufficient disk space, the data will be unclean. Or an unexpected error occurred
-    //return result<has_next>
     pub async fn apply(&self, sm: &SM, target_applied: u64) -> RaftResult<()> {
-        let (index, apply_result) = {
+        let index = {
             let mem = self.log_mem.read().await;
             if mem.applied >= target_applied {
                 return Ok(());
             }
-
             if mem.committed < target_applied {
                 return Ok(());
             }
-
             let entry = mem.get(mem.applied + 1);
-
             let bs = entry.encode();
             let (_, index, _) = entry.info();
-
             let mut file = self.log_file.write().await;
-
             if let Err(err) = file.writer.write(&u32::to_be_bytes(bs.len() as u32)) {
                 return Err(RaftError::IOError(err.to_string()));
             }
-
             if let Err(err) = file.writer.write(&bs) {
                 return Err(RaftError::IOError(err.to_string()));
             }
-
             conver(file.writer.flush())?;
-
             file.offset = file.offset + bs.len() as u64;
-
             if file.offset >= self.conf.log_file_size_mb * 1024 * 1024 {
                 file.log_rolling(index + 1)?;
             }
 
-            (
-                index,
-                match entry {
-                    Entry::Commit {
-                        term,
-                        index,
-                        commond,
-                        ..
-                    } => sm.apply(&term, &index, &commond),
-                    _ => panic!("not support!!!!!!"),
-                },
-            )
+            match entry {
+                Entry::Commit {
+                    term,
+                    index,
+                    commond,
+                    ..
+                } => {
+                    if let Err(e) = sm.apply(&term, &index, &commond) {
+                        error!("apply has err:[{}]", e);
+                    }
+                }
+                _ => panic!("not support!!!!!!"),
+            }
+            index
         };
-
         self.log_mem.write().await.applied = index;
 
-        apply_result
+        Ok(())
     }
 }
 // term , committed stands last entry info.

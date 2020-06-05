@@ -109,16 +109,49 @@ pub struct Peer {
 }
 
 impl Peer {
+    async fn pool_log(&self) -> RaftResult<deadpool::managed::Object<Connection, RaftError>> {
+        let mut times = 10;
+        loop {
+            match self.log_pool.get().await {
+                Ok(c) => break Ok(c),
+                Err(e) => {
+                    warn!("conn has err:{}", e);
+                    times -= 1;
+                    if times <= 0 {
+                        return Err(RaftError::Error(e.to_string()));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+        }
+    }
+    async fn pool_heartbeat(&self) -> RaftResult<deadpool::managed::Object<Connection, RaftError>> {
+        let mut times = 10;
+        loop {
+            match self.heart_pool.get().await {
+                Ok(c) => break Ok(c),
+                Err(e) => {
+                    warn!("conn has err:{}", e);
+                    times -= 1;
+                    if times <= 0 {
+                        return Err(RaftError::Error(e.to_string()));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
     async fn send(&self, body: Arc<Vec<u8>>) -> RaftResult<RaftError> {
         let mut conn = if body[0] == entry_type::HEARTBEAT {
-            self.heart_pool.get().await.unwrap()
+            self.pool_heartbeat().await?
         } else if body[0] == entry_type::COMMIT {
             match *self.status.read().await {
-                PeerStatus::Synchronizing => self.log_pool.get().await.unwrap(),
+                PeerStatus::Synchronizing => self.pool_log().await?,
                 _ => return Err(RaftError::NotReady),
             }
         } else {
-            self.log_pool.get().await.unwrap()
+            self.pool_log().await?
         };
 
         // write req

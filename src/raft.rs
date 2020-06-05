@@ -361,8 +361,8 @@ impl Raft {
         let raft = self.clone();
         async_std::task::spawn(async move {
             while !raft.stopd.load(SeqCst) {
-                let mut need_index = raft.applied.load(SeqCst);
-                if need_index <= raft.store.last_applied().await {
+                let mut need_apply = raft.applied.load(SeqCst);
+                if need_apply <= raft.store.last_applied().await {
                     raft.applied_tx_rx.1.recv().await.unwrap();
                     continue;
                 }
@@ -370,21 +370,21 @@ impl Raft {
                 if raft.is_leader().await {
                     raft.applied_tx_rx.1.recv().await.unwrap();
                 } else {
-                    if need_index > raft.store.last_index().await {
+                    if need_apply > raft.store.last_index().await {
                         if log_enabled!(Debug) {
                             debug!(
-                                "need_index:{} leass than raft last_index:{} applied:{}",
-                                need_index,
+                                "need_apply:{} leass than raft last_index:{} applied:{}",
+                                need_apply,
                                 raft.store.last_index().await,
                                 raft.store.last_applied().await
                             );
                         }
-                        need_index = raft.store.last_index().await;
+                        need_apply = raft.store.last_index().await;
                     }
-                    if let Err(e) = raft.store.apply(&raft.sm, need_index).await {
+                    if let Err(e) = raft.store.apply(&raft.sm, need_apply).await {
                         error!("store apply has err:{}", e);
                     }
-                    if raft.store.last_applied().await >= need_index {
+                    if raft.store.last_applied().await >= need_apply {
                         raft.applied_tx_rx.1.recv().await.unwrap();
                     }
                 }

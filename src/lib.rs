@@ -8,10 +8,6 @@ pub mod storage;
 #[macro_use]
 extern crate thiserror;
 
-fn string_to_static_str(s: String) -> &'static str {
-    Box::leak(s.into_boxed_str())
-}
-
 pub fn current_millis() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let start = SystemTime::now();

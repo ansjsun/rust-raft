@@ -1,27 +1,36 @@
 use async_std::task;
 use log::{debug, info};
-use rust4rs::{entity::Config, error::*, server::Server, state_machine::*};
+use raft4rs::{entity::Config, error::*, server::Server, state_machine::*};
 use std::sync::Arc;
 
 fn main() {
     task::block_on(async {
         env_logger::init_from_env(
             env_logger::Env::default()
-                .filter_or("MY_LOG_LEVEL", "info")
+                .filter_or("MY_LOG_LEVEL", "debug")
                 .write_style_or("auto", "always"),
         );
 
         debug!("start............");
 
-        let server1 = Arc::new(Server::new(make_config(1), make_resolver(), SM { id: 1 })).start();
-        let server2 = Arc::new(Server::new(make_config(2), make_resolver(), SM { id: 2 })).start();
-        let server3 = Arc::new(Server::new(make_config(3), make_resolver(), SM { id: 3 })).start();
+        let server1 = Arc::new(Server::new(make_config(1), make_resolver())).start();
+        let server2 = Arc::new(Server::new(make_config(2), make_resolver())).start();
+        let server3 = Arc::new(Server::new(make_config(3), make_resolver())).start();
 
         let replicas = &vec![1, 2, 3];
 
-        let raft1 = server1.create_raft(1, 0, &replicas).await.unwrap();
-        let _raft2 = server2.create_raft(1, 0, &replicas).await.unwrap();
-        let _raft3 = server3.create_raft(1, 0, &replicas).await.unwrap();
+        let raft1 = server1
+            .create_raft(1, 0, &replicas, SM { id: 1 })
+            .await
+            .unwrap();
+        let _raft2 = server2
+            .create_raft(1, 0, &replicas, SM { id: 2 })
+            .await
+            .unwrap();
+        let _raft3 = server3
+            .create_raft(1, 0, &replicas, SM { id: 3 })
+            .await
+            .unwrap();
 
         while !raft1.is_leader().await {
             raft1.try_to_leader().await.unwrap();

@@ -15,18 +15,15 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn new<R, S>(conf: Config, resolver: R, sm: S) -> Self
+    pub fn new<R>(conf: Config, resolver: R) -> Self
     where
         R: Resolver + Sync + Send + 'static,
-        S: StateMachine + Sync + Send + 'static,
     {
         let conf = Arc::new(conf);
+
         Server {
             conf: conf.clone(),
-            raft_server: Arc::new(RaftServer::new(
-                Arc::new(Box::new(resolver)),
-                Arc::new(Box::new(sm)),
-            )),
+            raft_server: Arc::new(RaftServer::new(Arc::new(Box::new(resolver)))),
         }
     }
 
@@ -51,12 +48,16 @@ impl Server {
     // If the leader is 0, the default discovery leader
     // when you fist create raft you can specify a leader to quickly form a raft group
     // replicas not have node_id , if have , it will remove the node id in replicas
-    pub async fn create_raft(
+    pub async fn create_raft<S>(
         &self,
         id: u64,
         leader: u64,
         replicas: &Vec<u64>,
-    ) -> RaftResult<Arc<Raft>> {
+        s: S,
+    ) -> RaftResult<Arc<Raft>>
+    where
+        S: StateMachine + Sync + Send + 'static,
+    {
         let mut set = HashSet::new();
         set.insert(self.conf.node_id);
         let rep = replicas
@@ -77,7 +78,7 @@ impl Server {
             self.conf.clone(),
             rep,
             self.raft_server.resolver.clone(),
-            self.raft_server.sm.clone(),
+            Arc::new(Box::new(s)),
         )
         .await?;
 
@@ -148,15 +149,13 @@ impl Server {
 struct RaftServer {
     rafts: RwLock<HashMap<u64, Arc<Raft>>>,
     resolver: RSL,
-    sm: SM,
 }
 
 impl RaftServer {
-    fn new(resolver: RSL, sm: SM) -> Self {
+    fn new(resolver: RSL) -> Self {
         RaftServer {
             rafts: RwLock::new(HashMap::new()),
             resolver: resolver,
-            sm: sm,
         }
     }
 

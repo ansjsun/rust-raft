@@ -19,26 +19,26 @@ pub trait StateMachine {
 }
 
 pub trait Resolver {
-    fn heartbeat_addr(&self, node_id: &u64) -> RaftResult<&str>;
-    fn log_addr(&self, node_id: &u64) -> RaftResult<&str>;
+    fn heartbeat_addr(&self, node_id: &u64) -> RaftResult<String>;
+    fn log_addr(&self, node_id: &u64) -> RaftResult<String>;
 }
 
 pub struct DefResolver {
-    log_addrs: HashMap<u64, &'static str>,
-    internal_addrs: HashMap<u64, &'static str>,
+    log_addrs: HashMap<u64, String>,
+    internal_addrs: HashMap<u64, String>,
 }
 
 impl Resolver for DefResolver {
-    fn heartbeat_addr(&self, node_id: &u64) -> RaftResult<&str> {
+    fn heartbeat_addr(&self, node_id: &u64) -> RaftResult<String> {
         match self.internal_addrs.get(node_id) {
-            Some(v) => Ok(v),
+            Some(v) => Ok(v.to_string()),
             None => Err(RaftError::NotfoundAddr(*node_id)),
         }
     }
 
-    fn log_addr(&self, node_id: &u64) -> RaftResult<&str> {
+    fn log_addr(&self, node_id: &u64) -> RaftResult<String> {
         match self.log_addrs.get(node_id) {
-            Some(v) => Ok(v),
+            Some(v) => Ok(v.to_string()),
             None => Err(RaftError::NotfoundAddr(*node_id)),
         }
     }
@@ -61,15 +61,11 @@ impl DefResolver {
             std::mem::forget(v);
         }
 
-        self.log_addrs.insert(
-            node_id,
-            crate::string_to_static_str(format!("{}:{}", host, log_port)),
-        );
+        self.log_addrs
+            .insert(node_id, format!("{}:{}", host, log_port));
 
-        self.internal_addrs.insert(
-            node_id,
-            crate::string_to_static_str(format!("{}:{}", host, heartbeat_port)),
-        );
+        self.internal_addrs
+            .insert(node_id, format!("{}:{}", host, heartbeat_port));
     }
 
     pub fn remove_node(&mut self, node_id: u64) {
