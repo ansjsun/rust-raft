@@ -38,6 +38,8 @@ pub enum RaftError {
     NotReady,
     #[error("not enough recipiet expect:{0} found:{1}")]
     NotEnoughRecipient(u16, u16),
+    #[error("err code:{0} msg:{1}")]
+    ErrCode(i32, String),
 }
 
 impl RaftError {
@@ -61,6 +63,7 @@ impl RaftError {
             RaftError::IncompleteErr => 15,
             RaftError::NotReady => 16,
             RaftError::NotEnoughRecipient(_, _) => 17,
+            RaftError::ErrCode(_, _) => 18,
         }
     }
 }
@@ -106,9 +109,15 @@ impl RaftError {
             }
             RaftError::NotEnoughRecipient(expect, got) => {
                 result = Vec::with_capacity(5);
-                result.push(12);
+                result.push(self.id());
                 result.extend_from_slice(&u16::to_be_bytes(*expect));
                 result.extend_from_slice(&u16::to_be_bytes(*got));
+            }
+            RaftError::ErrCode(code, msg) => {
+                result = Vec::with_capacity(4 + msg.len());
+                result.push(self.id());
+                result.extend_from_slice(&i32::to_be_bytes(*code));
+                result.extend_from_slice(msg.as_str().as_bytes());
             }
         }
 
@@ -138,6 +147,7 @@ impl RaftError {
             15 => RaftError::IncompleteErr,
             16 => RaftError::NotReady,
             17 => RaftError::NotEnoughRecipient(read_u16_slice(data, 1), read_u16_slice(data, 3)),
+            18 => RaftError::ErrCode(read_i32_slice(data, 1), read_string(data, 5)),
             _ => panic!("not found"),
         }
     }
@@ -150,6 +160,11 @@ fn read_string(data: &[u8], start: usize) -> String {
 fn read_u64_slice(s: &[u8], start: usize) -> u64 {
     let ptr = s[start..start + 8].as_ptr() as *const [u8; 8];
     u64::from_be_bytes(unsafe { *ptr })
+}
+
+fn read_i32_slice(s: &[u8], start: usize) -> i32 {
+    let ptr = s[start..start + 4].as_ptr() as *const [u8; 4];
+    i32::from_be_bytes(unsafe { *ptr })
 }
 
 fn read_u16_slice(s: &[u8], start: usize) -> u16 {

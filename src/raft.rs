@@ -306,7 +306,7 @@ impl Raft {
             self.sender.send_log(body).await?;
             lc
         } {
-            self.sm.apply_leader_change(leader, term, index);
+            self.sm.apply_leader_change(leader, term, index).await;
         }
 
         Ok(())

@@ -1,4 +1,5 @@
 use crate::error::*;
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -12,10 +13,11 @@ pub enum CommondType {
 pub type RSL = Arc<Box<dyn Resolver + Sync + Send + 'static>>;
 pub type SM = Arc<Box<dyn StateMachine + Sync + Send + 'static>>;
 
+#[async_trait]
 pub trait StateMachine {
     fn apply(&self, term: &u64, index: &u64, command: &[u8]) -> RaftResult<()>;
     fn apply_member_change(&self, t: CommondType, index: u64);
-    fn apply_leader_change(&self, leader: u64, term: u64, index: u64);
+    async fn apply_leader_change(&self, leader: u64, term: u64, index: u64);
 }
 
 pub trait Resolver {

@@ -21,7 +21,7 @@ fn main() {
         let replicas = &vec![1];
 
         let raft1 = server1
-            .create_raft(1, 0, &replicas, SM { id: 1 })
+            .create_raft(1, 1, &replicas, SM { id: 1 })
             .await
             .unwrap();
         // let _raft2 = server2
@@ -74,7 +74,7 @@ impl StateMachine for SM {
     }
     fn apply_leader_change(&self, leader: u64, term: u64, index: u64) {
         println!(
-            "apply_member_change {} leader:{} term:{} index:{}",
+            "apply_leader_change {} leader:{} term:{} index:{}",
             self.id, leader, term, index
         );
     }

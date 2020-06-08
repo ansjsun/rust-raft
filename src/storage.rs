@@ -2,7 +2,6 @@ use crate::entity::*;
 use crate::error::*;
 use crate::state_machine::SM;
 use async_std::sync::{Mutex, RwLock};
-use log::error;
 use log::warn;
 use std::fs;
 use std::io;
@@ -231,7 +230,7 @@ impl RaftLog {
     //if this function has err ,Means that raft may not work anymore
     // If an IO error, such as insufficient disk space, the data will be unclean. Or an unexpected error occurred
     pub async fn apply(&self, sm: &SM, target_applied: u64) -> RaftResult<()> {
-        let index = {
+        let (index, result) = {
             let mem = self.log_mem.read().await;
             if mem.applied >= target_applied {
                 return Ok(());
@@ -255,24 +254,20 @@ impl RaftLog {
                 file.log_rolling(index + 1)?;
             }
 
-            match entry {
+            let result = match entry {
                 Entry::Commit {
                     term,
                     index,
                     commond,
                     ..
-                } => {
-                    if let Err(e) = sm.apply(&term, &index, &commond) {
-                        error!("apply has err:[{}]", e);
-                    }
-                }
+                } => sm.apply(&term, &index, &commond),
                 _ => panic!("not support!!!!!!"),
-            }
-            index
+            };
+            (index, result)
         };
         self.log_mem.write().await.applied = index;
 
-        Ok(())
+        result
     }
 }
 // term , committed stands last entry info.
