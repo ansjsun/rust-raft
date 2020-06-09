@@ -78,7 +78,7 @@ impl Raft {
         resolver: RSL,
         sm: SM,
     ) -> RaftResult<Arc<Self>> {
-        let store = RaftLog::new(id, conf.clone())?;
+        let store = RaftLog::new(id, conf.clone()).await?;
         let (term, _, applied) = store.info().await;
 
         let raft = Arc::new(Raft {
