@@ -2,7 +2,10 @@ use crate::state_machine::{RSL, SM};
 use crate::storage::RaftLog;
 use crate::*;
 use crate::{entity::*, error::*, sender::*};
-use async_std::sync::{channel, Mutex, Receiver, RwLock, Sender as Tx};
+use async_std::{
+    sync::{channel, Mutex, Receiver, RwLock, Sender as Tx},
+    task,
+};
 pub use log::Level::Debug;
 use log::{debug, error, info, log_enabled};
 use rand::Rng;
@@ -10,7 +13,6 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering::SeqCst},
     Arc,
 };
-use std::thread::sleep;
 use std::time::Duration;
 
 impl Vote {
@@ -117,9 +119,23 @@ impl Raft {
         let pre_term = self.store.last_term().await;
         let index = self.store.commit(pre_term, term, 0, cmd).await?;
 
-        self.sender
-            .send_log(self.store.log_mem.read().await.get(index).encode())
-            .await?;
+        let e = {
+            if let Err(e) = self
+                .sender
+                .send_log(self.store.log_mem.read().await.get(index).encode())
+                .await
+            {
+                Some(e)
+            } else {
+                None
+            }
+        };
+
+        if let Some(e) = e {
+            self.store.rollback().await;
+            return Err(e);
+        }
+
         self.applied.store(index, SeqCst);
         self.notify();
         self.store.apply(&self.sm, index).await
@@ -359,7 +375,7 @@ impl Raft {
     pub fn start(self: &Arc<Raft>) {
         //this thread for apply log when new applied recived
         let raft = self.clone();
-        async_std::task::spawn(async move {
+        task::spawn(async move {
             while !raft.stopd.load(SeqCst) {
                 let mut need_apply = raft.applied.load(SeqCst);
                 if need_apply <= raft.store.last_applied().await {
@@ -393,7 +409,7 @@ impl Raft {
 
         let raft = self.clone();
         //this job for heartbeat . leader to send , follwer to check heartbeat time
-        async_std::task::spawn(async move {
+        task::spawn(async move {
             while !raft.stopd.load(SeqCst) {
                 if raft.is_leader().await {
                     let (_, committed, applied) = raft.store.info().await;
@@ -413,9 +429,8 @@ impl Raft {
                             raft.conf.node_id
                         );
                         //rand sleep to elect
-                        sleep(Duration::from_millis(
-                            rand::thread_rng().gen_range(150, 300),
-                        ));
+                        let random = rand::thread_rng().gen_range(150, 300);
+                        task::sleep(Duration::from_millis(random)).await;
 
                         let term = raft.term.load(SeqCst);
 
@@ -439,7 +454,7 @@ impl Raft {
                         }
                     }
                 }
-                sleep(Duration::from_millis(raft.conf.heartbeate_ms));
+                task::sleep(Duration::from_millis(raft.conf.heartbeate_ms)).await;
             }
         });
     }

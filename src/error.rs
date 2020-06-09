@@ -40,6 +40,8 @@ pub enum RaftError {
     NotEnoughRecipient(u16, u16),
     #[error("err code:{0} msg:{1}")]
     ErrCode(i32, String),
+    #[error("index:{0} out of memory index")]
+    OutMemIndex(u64),
 }
 
 impl RaftError {
@@ -64,6 +66,7 @@ impl RaftError {
             RaftError::NotReady => 16,
             RaftError::NotEnoughRecipient(_, _) => 17,
             RaftError::ErrCode(_, _) => 18,
+            RaftError::OutMemIndex(_) => 19,
         }
     }
 }
@@ -102,7 +105,8 @@ impl RaftError {
             | RaftError::NotLeader(num)
             | RaftError::LogFileNotFound(num)
             | RaftError::LogFileInvalid(num)
-            | RaftError::Timeout(num) => {
+            | RaftError::Timeout(num)
+            | RaftError::OutMemIndex(num) => {
                 result = Vec::with_capacity(9);
                 result.push(self.id());
                 result.extend_from_slice(&u64::to_be_bytes(*num));
@@ -148,6 +152,7 @@ impl RaftError {
             16 => RaftError::NotReady,
             17 => RaftError::NotEnoughRecipient(read_u16_slice(data, 1), read_u16_slice(data, 3)),
             18 => RaftError::ErrCode(read_i32_slice(data, 1), read_string(data, 5)),
+            19 => RaftError::OutMemIndex(read_u64_slice(data, 1)),
             _ => panic!("not found"),
         }
     }

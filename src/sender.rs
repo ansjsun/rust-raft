@@ -1,8 +1,7 @@
 use crate::entity::entry_type;
 use crate::error::*;
 use crate::raft::Raft;
-use async_std::sync::channel;
-use async_std::{net::TcpStream, prelude::*, sync::RwLock, task};
+use async_std::{net::TcpStream, prelude::*, sync::channel, sync::RwLock, task};
 use async_trait::async_trait;
 use log::{error, info, warn};
 use std::sync::Arc;
@@ -120,7 +119,7 @@ impl Peer {
                     if times <= 0 {
                         return Err(RaftError::Error(e.to_string()));
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    task::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
         }
@@ -136,7 +135,7 @@ impl Peer {
                     if times <= 0 {
                         return Err(RaftError::Error(e.to_string()));
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    task::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
         }
@@ -185,33 +184,48 @@ impl Peer {
 
         let mut conn = self.log_pool.get().await.unwrap();
         let conn = &mut conn;
-        if let Err(e) = self
-            .raft
-            .store
-            .iter(index + 1, |body| -> RaftResult<bool> {
-                task::block_on(async {
-                    conn.write_body(&self.raft_id, &body)
-                        .await
-                        .map_err(|e| RaftError::NetError(e.to_string()))?;
-                    let re = conn
-                        .read_result()
-                        .await
-                        .map_err(|e| RaftError::NetError(e.to_string()))?;
 
-                    if re != RaftError::Success {
-                        error!("send data has err:{}", re);
-                        Err(re)
-                    } else {
-                        Ok(true)
+        let iter = match self.raft.store.iter(index + 1).await {
+            Err(e) => {
+                error!("appending create iter has err:{}", e);
+                None
+            }
+            Ok(iter) => Some(iter),
+        };
+        if let Some(mut iter) = iter {
+            loop {
+                match iter.next(&self.raft.store).await {
+                    Err(e) => {
+                        error!("appending next has err:{}", e);
+                        break;
                     }
-                })
-            })
-            .await
-        {
-            error!("appending has err:{}", e);
+                    Ok(v) => match v {
+                        Some(body) => {
+                            if let Err(e) = conn.write_body(&self.raft_id, &body).await {
+                                error!("appending write has err:{}", e);
+                                break;
+                            };
+
+                            match conn.read_result().await {
+                                Err(e) => {
+                                    error!("appending read has err:{}", e);
+                                    break;
+                                }
+                                Ok(re) => {
+                                    if re != RaftError::Success {
+                                        error!("send data has err:{}", re);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        None => break,
+                    },
+                }
+            }
         };
 
-        *self.status.write().await = PeerStatus::Appending;
+        *self.status.write().await = PeerStatus::Synchronizing;
     }
 }
 
