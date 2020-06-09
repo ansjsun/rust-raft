@@ -360,9 +360,11 @@ impl RaftLog {
             }
             conver(file.writer.flush())?;
             file.offset = file.offset + bs.len() as u64;
-            if file.offset >= self.conf.log_file_size_mb * 1024 * 1024 {
-                file.log_rolling(index + 1)?;
-            }
+            if let Some(_) = self.lock_truncation.try_write() {
+                if file.offset >= self.conf.log_file_size_mb * 1024 * 1024 {
+                    file.log_rolling(index + 1)?;
+                }
+            };
 
             let result = match entry {
                 Entry::Commit {
