@@ -51,6 +51,7 @@ impl Server {
     pub async fn create_raft<S>(
         &self,
         id: u64,
+        start_index: u64,
         leader: u64,
         replicas: &Vec<u64>,
         s: S,
@@ -75,6 +76,7 @@ impl Server {
 
         let raft = Raft::new(
             id,
+            start_index,
             self.conf.clone(),
             rep,
             self.raft_server.resolver.clone(),
@@ -165,27 +167,20 @@ impl RaftServer {
             None => return Err(RaftError::RaftNotFound(raft_id)),
         };
 
-        match entry {
-            Entry::Commit {
-                pre_term,
-                term,
-                index,
-                commond,
-            } => {
-                raft.store.commit(pre_term, term, index, commond).await?;
-                raft.applied.store(index - 1, SeqCst);
+        match &entry {
+            Entry::Commit { index, .. }
+            | Entry::LeaderChange { index, .. }
+            | Entry::MemberChange { index, .. } => {
+                let applied_index = *index - 1;
+                raft.store.commit(entry).await?;
+                raft.applied.store(applied_index, SeqCst);
                 Ok(())
             }
             Entry::Vote {
                 leader,
                 term,
                 committed,
-            } => raft.vote(leader, term, committed).await,
-            Entry::LeaderChange {
-                leader,
-                term,
-                index,
-            } => raft.leader_change(leader, term, index).await,
+            } => raft.vote(*leader, *term, *committed).await,
             _ => {
                 error!("err log type {:?}", entry);
                 Err(RaftError::TypeErr)

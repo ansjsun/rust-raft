@@ -16,15 +16,34 @@ pub mod entry_type {
     pub const COMMIT: u8 = 1;
     pub const VOTE: u8 = 2;
     pub const LEADER_CHANGE: u8 = 3;
+    pub const MEMBER_CHANGE: u8 = 4;
 }
 
-#[derive(Debug)]
+pub mod action_type {
+    pub const ADD: u8 = 5;
+    pub const REMOVE: u8 = 6;
+}
+
+#[derive(Debug, Clone)]
 pub enum Entry {
     Commit {
         pre_term: u64,
         term: u64,
         index: u64,
         commond: Vec<u8>,
+    },
+    LeaderChange {
+        pre_term: u64,
+        term: u64,
+        index: u64,
+        leader: u64,
+    },
+    MemberChange {
+        pre_term: u64,
+        term: u64,
+        index: u64,
+        node_id: u64,
+        action: u8,
     },
     Heartbeat {
         term: u64,
@@ -36,11 +55,6 @@ pub enum Entry {
         leader: u64,
         term: u64,
         committed: u64,
-    },
-    LeaderChange {
-        leader: u64,
-        term: u64,
-        index: u64,
     },
 }
 
@@ -107,9 +121,22 @@ impl Decode for Entry {
                     return Err(RaftError::IncompleteErr);
                 }
                 Entry::LeaderChange {
-                    leader: read_u64_slice(&buf, 1),
+                    pre_term: read_u64_slice(&buf, 1),
                     term: read_u64_slice(&buf, 9),
                     index: read_u64_slice(&buf, 17),
+                    leader: read_u64_slice(&buf, 25),
+                }
+            }
+            entry_type::MEMBER_CHANGE => {
+                if buf.len() != 34 {
+                    return Err(RaftError::IncompleteErr);
+                }
+                Entry::MemberChange {
+                    pre_term: read_u64_slice(&buf, 1),
+                    term: read_u64_slice(&buf, 9),
+                    index: read_u64_slice(&buf, 17),
+                    node_id: read_u64_slice(&buf, 25),
+                    action: buf[33],
                 }
             }
             _ => return Err(RaftError::TypeErr),
@@ -128,7 +155,7 @@ impl Encode for Entry {
                 committed,
                 applied,
             } => {
-                vec = Vec::with_capacity(17);
+                vec = Vec::with_capacity(33);
                 vec.push(entry_type::HEARTBEAT);
                 vec.extend_from_slice(&u64::to_be_bytes(*term));
                 vec.extend_from_slice(&u64::to_be_bytes(*leader));
@@ -160,15 +187,32 @@ impl Encode for Entry {
                 vec.extend_from_slice(&u64::to_be_bytes(*committed));
             }
             Entry::LeaderChange {
-                leader,
+                pre_term,
                 term,
                 index,
+                leader,
             } => {
-                vec = Vec::with_capacity(25);
+                vec = Vec::with_capacity(33);
                 vec.push(entry_type::LEADER_CHANGE);
-                vec.extend_from_slice(&u64::to_be_bytes(*leader));
+                vec.extend_from_slice(&u64::to_be_bytes(*pre_term));
                 vec.extend_from_slice(&u64::to_be_bytes(*term));
                 vec.extend_from_slice(&u64::to_be_bytes(*index));
+                vec.extend_from_slice(&u64::to_be_bytes(*leader));
+            }
+            Entry::MemberChange {
+                pre_term,
+                term,
+                index,
+                node_id,
+                action,
+            } => {
+                vec = Vec::with_capacity(34);
+                vec.push(entry_type::MEMBER_CHANGE);
+                vec.extend_from_slice(&u64::to_be_bytes(*pre_term));
+                vec.extend_from_slice(&u64::to_be_bytes(*term));
+                vec.extend_from_slice(&u64::to_be_bytes(*index));
+                vec.extend_from_slice(&u64::to_be_bytes(*node_id));
+                vec.push(*action);
             }
         }
         vec
@@ -176,21 +220,43 @@ impl Encode for Entry {
 }
 
 impl Entry {
-    pub fn info(&self) -> (u64, u64, u64) {
+    pub fn info(&self) -> (u64, u64) {
         match &self {
-            Entry::Commit {
-                term,
-                index,
-                commond,
-                ..
-            } => (*term, *index, 17 + commond.len() as u64),
+            Entry::Commit { term, index, .. } => (*term, *index),
             Entry::Heartbeat {
                 term, committed, ..
-            } => (*term, *committed, 33),
+            } => (*term, *committed),
             Entry::Vote {
                 term, committed, ..
-            } => (*term, *committed, 33),
-            Entry::LeaderChange { term, index, .. } => (*term, *index, 33),
+            } => (*term, *committed),
+            Entry::LeaderChange { term, index, .. } => (*term, *index),
+            Entry::MemberChange { term, index, .. } => (*term, *index),
+        }
+    }
+
+    // it action need to store raft log
+    //it return (pre_term , term, index)
+    pub fn commit_info(&self) -> (u64, u64, u64) {
+        match &self {
+            Entry::Commit {
+                pre_term,
+                term,
+                index,
+                ..
+            } => (*pre_term, *term, *index),
+            Entry::LeaderChange {
+                pre_term,
+                term,
+                index,
+                ..
+            } => (*pre_term, *term, *index),
+            Entry::MemberChange {
+                pre_term,
+                term,
+                index,
+                ..
+            } => (*pre_term, *term, *index),
+            _ => panic!(format!("not support commit_info by this type:{:?}", self)),
         }
     }
 

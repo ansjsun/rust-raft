@@ -25,11 +25,11 @@ async fn main() {
         .await
         .unwrap();
     let _raft2 = server2
-        .create_raft(1, 0, &replicas, SM { id: 2 })
+        .create_raft(1, 1, &replicas, SM { id: 2 })
         .await
         .unwrap();
     let _raft3 = server3
-        .create_raft(1, 0, &replicas, SM { id: 3 })
+        .create_raft(1, 1, &replicas, SM { id: 3 })
         .await
         .unwrap();
 

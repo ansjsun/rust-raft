@@ -1,6 +1,5 @@
 use crate::entity::*;
 use crate::error::*;
-use crate::state_machine::SM;
 use async_std::sync::RwLock;
 use log::warn;
 use std::fs;
@@ -14,7 +13,7 @@ static FILE_END: &str = ".log";
 static BUF_SIZE: usize = 1024 * 1024;
 
 pub struct RaftLog {
-    _id: u64,
+    id: u64,
     conf: Arc<Config>,
     pub log_mem: RwLock<LogMem>,
     log_file: RwLock<LogFile>,
@@ -151,7 +150,7 @@ impl RaftLog {
 
             let (offset, entry) =
                 LogFile::read_last_entry(dir.clone(), file_ids[last_index], false)?;
-            let (term, index, _) = entry.info();
+            let (term, index) = entry.info();
             if index > 0 {
                 log_file = LogFile::new(dir.clone(), offset, file_ids)?;
                 log_mem = LogMem::new(conf.log_max_num, term, index);
@@ -163,14 +162,14 @@ impl RaftLog {
 
                 let (_, entry) =
                     LogFile::read_last_entry(dir.clone(), file_ids[last_index - 2], true)?;
-                let (term, index, _) = entry.info();
+                let (term, index) = entry.info();
                 log_file = LogFile::new(dir.clone(), 0, file_ids)?;
                 log_mem = LogMem::new(conf.log_max_num, term, index);
             }
         }
 
         Ok(RaftLog {
-            _id: id,
+            id: id,
             conf: conf,
             log_mem: RwLock::new(log_mem),
             log_file: RwLock::new(log_file),
@@ -267,31 +266,54 @@ impl RaftLog {
         self.log_mem.read().await.term
     }
 
+    pub fn load_start_index_or_def(&self, start_index: u64) -> u64 {
+        let path = Path::new(&self.conf.log_path)
+            .join(format!("{}", self.id))
+            .join("start_index");
+        if let Ok(v) = fs::read(&path) {
+            if v.len() == 8 {
+                let mut dst = [0u8; 8];
+                dst.clone_from_slice(&v);
+                return u64::from_be_bytes(dst);
+            }
+        }
+        fs::write(&path, u64::to_be_bytes(start_index)).expect("write start index has err");
+        start_index
+    }
+
+    // pre_term: u64,
+    // term: u64,
+    // mut index: u64,
+    // cmd: Vec<u8>,
     //this method to store entry to mem  by vec .
     //if vec length gather conf max log num  , it will truncation to min log num , but less than apllied index
-    pub async fn commit(
-        &self,
-        pre_term: u64,
-        term: u64,
-        mut index: u64,
-        cmd: Vec<u8>,
-    ) -> RaftResult<u64> {
+    pub async fn commit(&self, mut entry: Entry) -> RaftResult<u64> {
         let mut mem = self.log_mem.write().await;
+
+        let (pre_term, term, mut new_index) = entry.commit_info();
 
         if mem.term > term {
             return Err(RaftError::TermLess);
         }
 
-        if index == 0 {
-            index = mem.committed + 1;
-        } else if index > mem.committed + 1 {
+        if new_index == 0 {
+            new_index = mem.committed + 1;
+            match entry {
+                Entry::Commit { ref mut index, .. }
+                | Entry::MemberChange { ref mut index, .. }
+                | Entry::LeaderChange { ref mut index, .. } => {
+                    *index = new_index;
+                }
+                _ => panic!("not support this type:{:?}", entry),
+            }
+        } else if new_index > mem.committed + 1 {
             return Err(RaftError::IndexLess(mem.committed));
-        } else if index < mem.committed + 1 {
-            if index == mem.committed && term == mem.term {
-                return Ok(index);
+        } else if new_index < mem.committed + 1 {
+            if new_index == mem.committed && term == mem.term {
+                return Ok(new_index);
             }
             //Indicates that log conflicts need to be rolled back
-            let new_len = (index - mem.offset) as usize;
+            let new_len = (new_index - mem.offset) as usize;
             unsafe { mem.logs.set_len(new_len) };
         }
 
@@ -299,25 +321,21 @@ impl RaftLog {
             //if not same pre term , means last entry is invalided . rolled bak
             let new_len = mem.committed as usize - 1;
             unsafe { mem.logs.set_len(new_len) };
-            let (term, index, _) = mem.get(mem.committed - 1).info();
+            let (term, index) = mem.get(mem.committed - 1).info();
             mem.committed = index;
             mem.term = term;
             return Err(RaftError::IndexLess(index));
         }
 
-        mem.logs.push(Entry::Commit {
-            pre_term: pre_term,
-            term: term,
-            index: index,
-            commond: cmd,
-        });
+        mem.logs.push(entry);
 
-        mem.committed = index;
+        mem.committed = new_index;
         mem.term = term;
 
         if mem.logs.len() >= self.conf.log_max_num {
             if let Some(_) = self.lock_truncation.try_write() {
-                let keep_num = usize::max(self.conf.log_min_num, (index - mem.applied) as usize);
+                let keep_num =
+                    usize::max(self.conf.log_min_num, (new_index - mem.applied) as usize);
                 if mem.logs.len() - keep_num > 10 {
                     let off = mem.logs.len() - keep_num;
                     mem.logs = mem.logs.split_off(off as usize);
@@ -326,7 +344,7 @@ impl RaftLog {
             }
         }
 
-        Ok(index)
+        Ok(new_index)
     }
 
     pub async fn rollback(&self) {
@@ -339,18 +357,15 @@ impl RaftLog {
 
     //if this function has err ,Means that raft may not work anymore
     // If an IO error, such as insufficient disk space, the data will be unclean. Or an unexpected error occurred
-    pub async fn apply(&self, sm: &SM, target_applied: u64) -> RaftResult<()> {
-        let (index, result) = {
+    pub async fn save_to_log(&self, target_applied: u64) -> RaftResult<u64> {
+        let index = {
             let mem = self.log_mem.read().await;
-            if mem.applied >= target_applied {
-                return Ok(());
-            }
-            if mem.committed < target_applied {
-                return Ok(());
+            if mem.applied >= target_applied || mem.committed < target_applied {
+                return Ok(0);
             }
             let entry = mem.get(mem.applied + 1);
             let bs = entry.encode();
-            let (_, index, _) = entry.info();
+            let (_, index) = entry.info();
             let mut file = self.log_file.write().await;
             if let Err(err) = file.writer.write(&u32::to_be_bytes(bs.len() as u32)) {
                 return Err(RaftError::IOError(err.to_string()));
@@ -365,21 +380,10 @@ impl RaftLog {
                     file.log_rolling(index + 1)?;
                 }
             };
-
-            let result = match entry {
-                Entry::Commit {
-                    term,
-                    index,
-                    commond,
-                    ..
-                } => sm.apply(&term, &index, &commond),
-                _ => panic!("not support!!!!!!"),
-            };
-            (index, result)
+            index
         };
         self.log_mem.write().await.applied = index;
-
-        result
+        Ok(index)
     }
 }
 // term , committed stands last entry info.
@@ -588,7 +592,7 @@ pub fn validate_log_file(path: std::path::PathBuf, check: bool) -> RaftResult<u6
         let e = Entry::decode(&buf)?;
         pre_index += 1;
         if check {
-            let (_, index, _) = e.info();
+            let (_, index) = e.info();
             if check && pre_index != index {
                 return Err(RaftError::Error(format!(
                     "id is not continuous pre:{} now:{}",

@@ -45,6 +45,8 @@ pub struct RaftInfo {
 pub struct Raft {
     pub id: u64,
     node_id: u64,
+    //when create raft need set this value for member_change has this self in old log .
+    start_index: u64,
     conf: Arc<Config>,
     state: RwLock<RaftState>,
     stopd: AtomicBool,
@@ -58,7 +60,7 @@ pub struct Raft {
     applied_tx_rx: (Tx<usize>, Receiver<usize>),
     last_heart: AtomicU64,
     pub store: RaftLog,
-    pub replicas: Vec<u64>,
+    pub replicas: RwLock<Vec<u64>>,
     pub resolver: RSL,
     sm: SM,
 }
@@ -71,8 +73,16 @@ struct Vote {
 }
 
 impl Raft {
+    /// id is raft id: it unique in diff raft group
+    /// start_index: to add member when raft group exists . set it for playback log not remove self
+    /// it first to load it by disk , if not exists use by your set, if you unknow how to set , set it 0
+    /// conf is raft config
+    /// replicas all members in raft group .
+    /// resolver to find addr by node_id
+    /// callback for app
     pub async fn new(
         id: u64,
+        start_index: u64,
         conf: Arc<Config>,
         replicas: Vec<u64>,
         resolver: RSL,
@@ -84,6 +94,7 @@ impl Raft {
         let raft = Arc::new(Raft {
             id: id,
             node_id: conf.node_id,
+            start_index: store.load_start_index_or_def(start_index),
             conf: conf.clone(),
             state: RwLock::new(RaftState::Follower),
             stopd: AtomicBool::new(false),
@@ -95,12 +106,12 @@ impl Raft {
             applied_tx_rx: channel(1),
             last_heart: AtomicU64::new(current_millis()),
             store: store,
-            replicas: replicas,
+            replicas: RwLock::new(replicas),
             resolver: resolver,
             sm: sm,
         });
 
-        for node_id in &raft.replicas {
+        for node_id in &*raft.replicas.read().await {
             raft.sender.add_peer(*node_id, raft.clone()).await;
         }
         Ok(raft)
@@ -112,12 +123,48 @@ impl Raft {
 
     //this function only call by leader
     pub async fn submit(self: &Arc<Raft>, cmd: Vec<u8>) -> RaftResult<()> {
+        self.commit(Entry::Commit {
+            pre_term: self.store.last_term().await,
+            term: self.term.load(SeqCst),
+            index: 0,
+            commond: cmd,
+        })
+        .await
+    }
+
+    //this function only call by leader
+    //action in entry::action_type::{ADD, REMOVE}
+    pub async fn add_member(self: &Arc<Raft>, node_id: u64) -> RaftResult<()> {
+        self.commit(Entry::MemberChange {
+            pre_term: self.store.last_term().await,
+            term: self.term.load(SeqCst),
+            index: 0,
+            node_id: node_id,
+            action: action_type::ADD,
+        })
+        .await
+    }
+
+    //this function only call by leader
+    //action in entry::action_type::{ADD, REMOVE}
+    pub async fn remove_member(self: &Arc<Raft>, node_id: u64) -> RaftResult<()> {
+        self.commit(Entry::MemberChange {
+            pre_term: self.store.last_term().await,
+            term: self.term.load(SeqCst),
+            index: 0,
+            node_id: node_id,
+            action: action_type::REMOVE,
+        })
+        .await
+    }
+
+    //this function only call by leader
+    async fn commit(self: &Arc<Raft>, entry: Entry) -> RaftResult<()> {
         if !self.is_leader().await {
             return Err(RaftError::NotLeader(self.leader.load(SeqCst)));
         }
-        let term = self.term.load(SeqCst);
-        let pre_term = self.store.last_term().await;
-        let index = self.store.commit(pre_term, term, 0, cmd).await?;
+
+        let index = self.store.commit(entry).await?;
 
         let e = {
             if let Err(e) = self
@@ -138,7 +185,70 @@ impl Raft {
 
         self.applied.store(index, SeqCst);
         self.notify();
-        self.store.apply(&self.sm, index).await
+        self.apply(index).await
+    }
+
+    //use this function make sure , index in memory.
+    async fn apply(self: &Arc<Raft>, index: u64) -> RaftResult<()> {
+        let entry = { self.store.log_mem.read().await.get(index).clone() };
+
+        match entry {
+            Entry::Commit {
+                term,
+                index,
+                commond,
+                ..
+            } => self.sm.apply_log(term, index, commond),
+            Entry::LeaderChange {
+                term,
+                index,
+                leader,
+                ..
+            } => {
+                if self.is_leader().await {
+                    self.to_follower().await;
+                }
+                self.leader.store(leader, SeqCst);
+                self.term.store(term, SeqCst);
+                self.sm.apply_leader_change(term, index, leader).await
+            }
+            Entry::MemberChange {
+                term,
+                index,
+                node_id,
+                action,
+                ..
+            } => {
+                //if change member equal self node id and
+                // index before node raft create, skip this log
+                if self.start_index > index && node_id == self.node_id {
+                    return Ok(());
+                }
+
+                let exists = {
+                    let replicas = &mut *self.replicas.write().await;
+                    let exists = replicas.contains(&node_id);
+                    if action == action_type::ADD && !exists {
+                        replicas.push(node_id);
+                        self.sender.add_peer(node_id, self.clone()).await;
+                    }
+
+                    if action == action_type::REMOVE && exists {
+                        replicas.retain(|&id| id != node_id);
+                        self.sender.remove_peer(node_id).await;
+                    }
+                    exists
+                };
+
+                self.sm
+                    .apply_member_change(term, index, node_id, action, exists)
+            }
+            _ => panic!("not support!!!!!!"),
+        }
+    }
+
+    pub fn get_resolver(&self) -> &RSL {
+        &self.resolver
     }
 
     // use this function make sure raft is follower
@@ -298,34 +408,21 @@ impl Raft {
     //put empty log
     async fn to_leader(self: &Arc<Raft>) -> RaftResult<()> {
         info!("raft_node:{} to leader ", self.node_id);
-        if let Entry::LeaderChange {
-            leader,
-            term,
-            index,
-        } = {
-            let mut state = self.state.write().await;
-            if let RaftState::Leader = *state {
-                return Ok(());
-            };
+        let mut state = self.state.write().await;
+        if let RaftState::Leader = *state {
+            return Ok(());
+        };
+        *state = RaftState::Leader;
+        self.term.fetch_add(1, SeqCst);
+        self.last_heart.store(current_millis(), SeqCst);
 
-            *state = RaftState::Leader;
-            self.term.fetch_add(1, SeqCst);
-            self.last_heart.store(current_millis(), SeqCst);
-            let index = self.store.last_index().await;
-            let lc = Entry::LeaderChange {
-                leader: self.conf.node_id,
-                term: self.term.load(SeqCst),
-                index: index,
-            };
-
-            let body = lc.encode();
-            self.sender.send_log(body).await?;
-            lc
-        } {
-            self.sm.apply_leader_change(leader, term, index).await;
-        }
-
-        Ok(())
+        self.commit(Entry::LeaderChange {
+            pre_term: self.store.last_term().await,
+            term: self.term.load(SeqCst),
+            index: 0,
+            leader: self.node_id,
+        })
+        .await
     }
 
     pub async fn to_follower(&self) {
@@ -397,8 +494,13 @@ impl Raft {
                         }
                         need_apply = raft.store.last_index().await;
                     }
-                    if let Err(e) = raft.store.apply(&raft.sm, need_apply).await {
-                        error!("store apply has err:{}", e);
+                    match raft.store.save_to_log(need_apply).await {
+                        Err(e) => error!("store save_to_log has err:{}", e),
+                        Ok(index) => {
+                            if let Err(e) = raft.apply(index).await {
+                                error!("apply index:{} has err:{}", index, e);
+                            }
+                        }
                     }
                     if raft.store.last_applied().await >= need_apply {
                         raft.applied_tx_rx.1.recv().await.unwrap();

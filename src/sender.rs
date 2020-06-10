@@ -96,6 +96,7 @@ impl deadpool::managed::Manager<Connection, RaftError> for Manager {
 pub enum PeerStatus {
     Synchronizing,
     Appending,
+    Stoped,
 }
 
 pub struct Peer {
@@ -340,5 +341,15 @@ impl Sender {
         });
 
         self.peers.write().await.push(peer);
+    }
+
+    pub async fn remove_peer(&self, node_id: u64) {
+        let peers = &mut *self.peers.write().await;
+        for p in &*peers {
+            if p.node_id == node_id {
+                *p.status.write().await = PeerStatus::Stoped;
+            }
+        }
+        peers.retain(|p| if node_id == p.node_id { false } else { true });
     }
 }

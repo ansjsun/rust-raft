@@ -3,21 +3,21 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Debug)]
-pub enum CommondType {
-    Data,
-    AddNode,
-    RemoveNode,
-}
-
 pub type RSL = Arc<Box<dyn Resolver + Sync + Send + 'static>>;
 pub type SM = Arc<Box<dyn StateMachine + Sync + Send + 'static>>;
 
 #[async_trait]
 pub trait StateMachine {
-    fn apply(&self, term: &u64, index: &u64, command: &[u8]) -> RaftResult<()>;
-    fn apply_member_change(&self, t: CommondType, index: u64);
-    async fn apply_leader_change(&self, leader: u64, term: u64, index: u64);
+    fn apply_log(&self, term: u64, index: u64, command: Vec<u8>) -> RaftResult<()>;
+    fn apply_member_change(
+        &self,
+        term: u64,
+        index: u64,
+        node_id: u64,
+        action: u8,
+        exists: bool,
+    ) -> RaftResult<()>;
+    async fn apply_leader_change(&self, term: u64, index: u64, leader: u64) -> RaftResult<()>;
 }
 
 pub trait Resolver {
