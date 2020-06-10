@@ -13,5 +13,5 @@ path = "src/main.rs"
 log = "0.4"
 env_logger = "0.7.1"
 raft4rs = { path = "..", version = "0.1.0" }
-async-std = { version = "1.6.0", features = ["default","unstable"]}
+async-std = { version = "1.6.0", features = ["default","unstable","attributes"]}
 async-trait = "0.1.33"
