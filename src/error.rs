@@ -32,9 +32,9 @@ pub enum RaftError {
     LogFileInvalid(u64),
     #[error("time out by ms:{0}")]
     Timeout(u64),
-    #[error("incomplete data")]
-    IncompleteErr,
-    #[error("incomplete data")]
+    #[error("incomplete data for type:{0}")]
+    IncompleteErr(u64),
+    #[error("engine not ready")]
     NotReady,
     #[error("not enough recipiet expect:{0} found:{1}")]
     NotEnoughRecipient(u16, u16),
@@ -62,7 +62,7 @@ impl RaftError {
             RaftError::LogFileNotFound(_) => 12,
             RaftError::LogFileInvalid(_) => 13,
             RaftError::Timeout(_) => 14,
-            RaftError::IncompleteErr => 15,
+            RaftError::IncompleteErr(_) => 15,
             RaftError::NotReady => 16,
             RaftError::NotEnoughRecipient(_, _) => 17,
             RaftError::ErrCode(_, _) => 18,
@@ -73,7 +73,7 @@ impl RaftError {
 
 pub type RaftResult<T> = std::result::Result<T, RaftError>;
 
-pub fn conver<T, E: ToString>(result: std::result::Result<T, E>) -> RaftResult<T> {
+pub fn convert<T, E: ToString>(result: std::result::Result<T, E>) -> RaftResult<T> {
     match result {
         Ok(t) => Ok(t),
         Err(e) => Err(RaftError::Error(e.to_string())),
@@ -89,7 +89,6 @@ impl RaftError {
             | RaftError::TermGreater
             | RaftError::VoteNotAllow
             | RaftError::TypeErr
-            | RaftError::IncompleteErr
             | RaftError::NotReady => {
                 result = Vec::with_capacity(1);
                 result.push(self.id());
@@ -106,7 +105,8 @@ impl RaftError {
             | RaftError::LogFileNotFound(num)
             | RaftError::LogFileInvalid(num)
             | RaftError::Timeout(num)
-            | RaftError::OutMemIndex(num) => {
+            | RaftError::OutMemIndex(num)
+            | RaftError::IncompleteErr(num) => {
                 result = Vec::with_capacity(9);
                 result.push(self.id());
                 result.extend_from_slice(&u64::to_be_bytes(*num));
@@ -130,7 +130,7 @@ impl RaftError {
 
     pub fn decode(data: &Vec<u8>) -> Self {
         if data.len() < 1 {
-            return RaftError::IncompleteErr;
+            return RaftError::IncompleteErr(0);
         }
         match data[0] {
             0 => RaftError::Success,
@@ -148,7 +148,7 @@ impl RaftError {
             12 => RaftError::LogFileNotFound(read_u64_slice(data, 1)),
             13 => RaftError::LogFileInvalid(read_u64_slice(data, 1)),
             14 => RaftError::Timeout(read_u64_slice(data, 1)),
-            15 => RaftError::IncompleteErr,
+            15 => RaftError::IncompleteErr(read_u64_slice(data, 1)),
             16 => RaftError::NotReady,
             17 => RaftError::NotEnoughRecipient(read_u16_slice(data, 1), read_u16_slice(data, 3)),
             18 => RaftError::ErrCode(read_i32_slice(data, 1), read_string(data, 5)),

@@ -8,7 +8,7 @@ pub type SM = Arc<Box<dyn StateMachine + Sync + Send + 'static>>;
 
 #[async_trait]
 pub trait StateMachine {
-    fn apply_log(&self, term: u64, index: u64, command: Vec<u8>) -> RaftResult<()>;
+    fn apply_log(&self, term: u64, index: u64, command: &[u8]) -> RaftResult<()>;
     fn apply_member_change(
         &self,
         term: u64,

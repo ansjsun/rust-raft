@@ -1,4 +1,4 @@
-use crate::error::{conver, RaftError, RaftResult};
+use crate::error::{convert, RaftError, RaftResult};
 use async_std::net::TcpStream;
 use async_std::prelude::*;
 
@@ -60,13 +60,13 @@ pub enum Entry {
 
 async fn read_u32(stream: &mut TcpStream) -> RaftResult<u32> {
     let mut output = [0u8; 4];
-    conver(stream.read_exact(&mut output[..]).await)?;
+    convert(stream.read_exact(&mut output[..]).await)?;
     Ok(u32::from_be_bytes(output))
 }
 
 async fn read_u64(stream: &mut TcpStream) -> RaftResult<u64> {
     let mut output = [0u8; 8];
-    conver(stream.read_exact(&mut output[..]).await)?;
+    convert(stream.read_exact(&mut output[..]).await)?;
     Ok(u64::from_be_bytes(output))
 }
 
@@ -80,13 +80,13 @@ impl Decode for Entry {
     #[warn(unreachable_patterns)]
     fn decode(buf: &[u8]) -> RaftResult<Self::Item> {
         if buf.len() == 0 {
-            return Err(RaftError::IncompleteErr);
+            return Err(RaftError::IncompleteErr(0));
         }
 
         let entry = match buf[0] {
             entry_type::HEARTBEAT => {
                 if buf.len() != 33 {
-                    return Err(RaftError::IncompleteErr);
+                    return Err(RaftError::IncompleteErr(buf[0] as u64));
                 }
                 Entry::Heartbeat {
                     term: read_u64_slice(&buf, 1),
@@ -97,7 +97,7 @@ impl Decode for Entry {
             }
             entry_type::COMMIT => {
                 if buf.len() < 25 {
-                    return Err(RaftError::IncompleteErr);
+                    return Err(RaftError::IncompleteErr(buf[0] as u64));
                 }
                 Entry::Commit {
                     pre_term: read_u64_slice(&buf, 1),
@@ -108,7 +108,7 @@ impl Decode for Entry {
             }
             entry_type::VOTE => {
                 if buf.len() != 25 {
-                    return Err(RaftError::IncompleteErr);
+                    return Err(RaftError::IncompleteErr(buf[0] as u64));
                 }
                 Entry::Vote {
                     leader: read_u64_slice(&buf, 1),
@@ -117,8 +117,8 @@ impl Decode for Entry {
                 }
             }
             entry_type::LEADER_CHANGE => {
-                if buf.len() != 25 {
-                    return Err(RaftError::IncompleteErr);
+                if buf.len() != 33 {
+                    return Err(RaftError::IncompleteErr(buf[0] as u64));
                 }
                 Entry::LeaderChange {
                     pre_term: read_u64_slice(&buf, 1),
@@ -129,7 +129,7 @@ impl Decode for Entry {
             }
             entry_type::MEMBER_CHANGE => {
                 if buf.len() != 34 {
-                    return Err(RaftError::IncompleteErr);
+                    return Err(RaftError::IncompleteErr(buf[0] as u64));
                 }
                 Entry::MemberChange {
                     pre_term: read_u64_slice(&buf, 1),
@@ -265,7 +265,7 @@ impl Entry {
         let len = read_u32(stream).await?;
         let mut buf: Vec<u8> = Vec::with_capacity(len as usize);
         buf.resize_with(len as usize, Default::default);
-        conver(stream.read_exact(&mut buf).await)?;
+        convert(stream.read_exact(&mut buf).await)?;
         Ok((raft_id, Self::decode(&buf)?))
     }
 }

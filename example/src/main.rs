@@ -21,20 +21,22 @@ async fn main() {
     let replicas = &vec![1, 2, 3];
 
     let raft1 = server1
-        .create_raft(1, 1, &replicas, SM { id: 1 })
+        .create_raft(1, 0, 1, replicas, SM { id: 1 })
         .await
         .unwrap();
     let _raft2 = server2
-        .create_raft(1, 1, &replicas, SM { id: 2 })
+        .create_raft(1, 0, 1, replicas, SM { id: 2 })
         .await
         .unwrap();
     let _raft3 = server3
-        .create_raft(1, 1, &replicas, SM { id: 3 })
+        .create_raft(1, 0, 1, replicas, SM { id: 3 })
         .await
         .unwrap();
 
     while !raft1.is_leader().await {
-        raft1.try_to_leader().await.unwrap();
+        if let Err(e) = raft1.try_to_leader().await {
+            println!("raft1 try to leader has err:{:?}", e);
+        }
         std::thread::sleep(std::time::Duration::from_secs(1));
         info!("wait raft1 to leader times");
     }
@@ -57,7 +59,7 @@ struct SM {
 
 #[async_trait]
 impl StateMachine for SM {
-    fn apply(&self, term: &u64, index: &u64, command: &[u8]) -> RaftResult<()> {
+    fn apply_log(&self, term: u64, index: u64, command: &[u8]) -> RaftResult<()> {
         if index % 10000 == 0 {
             println!(
                 "apply {} term:{} index:{} command:{:?}",
@@ -69,17 +71,26 @@ impl StateMachine for SM {
         }
         Ok(())
     }
-    fn apply_member_change(&self, t: CommondType, index: u64) {
+    fn apply_member_change(
+        &self,
+        term: u64,
+        index: u64,
+        node_id: u64,
+        action: u8,
+        exists: bool,
+    ) -> RaftResult<()> {
         println!(
             "apply_member_change {} type:{:?} index:{}",
-            self.id, t, index
+            self.id, action, index
         );
+        Ok(())
     }
-    async fn apply_leader_change(&self, leader: u64, term: u64, index: u64) {
+    async fn apply_leader_change(&self, term: u64, index: u64, leader: u64) -> RaftResult<()> {
         println!(
             "apply_leader_change {} leader:{} term:{} index:{}",
             self.id, leader, term, index
         );
+        Ok(())
     }
 }
 

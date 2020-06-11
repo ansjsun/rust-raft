@@ -57,7 +57,7 @@ pub struct Raft {
     //update by heartbeat or commit
     pub applied: AtomicU64,
     sender: Sender,
-    applied_tx_rx: (Tx<usize>, Receiver<usize>),
+    notify: (Tx<usize>, Receiver<usize>),
     last_heart: AtomicU64,
     pub store: RaftLog,
     pub replicas: RwLock<Vec<u64>>,
@@ -92,7 +92,7 @@ impl Raft {
         let (term, _, applied) = store.info().await;
 
         let raft = Arc::new(Raft {
-            id: id,
+            id,
             node_id: conf.node_id,
             start_index: store.load_start_index_or_def(start_index),
             conf: conf.clone(),
@@ -103,12 +103,12 @@ impl Raft {
             leader: AtomicU64::new(0),
             applied: AtomicU64::new(applied),
             sender: sender::Sender::new(),
-            applied_tx_rx: channel(1),
+            notify: channel(100),
             last_heart: AtomicU64::new(current_millis()),
-            store: store,
+            store,
             replicas: RwLock::new(replicas),
-            resolver: resolver,
-            sm: sm,
+            resolver,
+            sm,
         });
 
         for node_id in &*raft.replicas.read().await {
@@ -117,8 +117,12 @@ impl Raft {
         Ok(raft)
     }
 
-    fn notify(self: &Raft) {
-        let _ = self.applied_tx_rx.0.try_send(0);
+    pub async fn notify(self: &Raft) {
+        self.notify.0.send(0).await;
+    }
+
+    async fn notified(self: &Raft) {
+        self.notify.1.recv().await.unwrap();
     }
 
     //this function only call by leader
@@ -139,7 +143,7 @@ impl Raft {
             pre_term: self.store.last_term().await,
             term: self.term.load(SeqCst),
             index: 0,
-            node_id: node_id,
+            node_id,
             action: action_type::ADD,
         })
         .await
@@ -152,7 +156,7 @@ impl Raft {
             pre_term: self.store.last_term().await,
             term: self.term.load(SeqCst),
             index: 0,
-            node_id: node_id,
+            node_id,
             action: action_type::REMOVE,
         })
         .await
@@ -184,33 +188,33 @@ impl Raft {
         }
 
         self.applied.store(index, SeqCst);
-        self.notify();
-        self.apply(index).await
+        self.store.save_to_log(index, self).await
     }
 
     //use this function make sure , index in memory.
-    async fn apply(self: &Arc<Raft>, index: u64) -> RaftResult<()> {
-        let entry = { self.store.log_mem.read().await.get(index).clone() };
-
+    //leader to call this mehtod
+    pub async fn apply(self: &Arc<Raft>, entry: &Entry) -> RaftResult<()> {
         match entry {
             Entry::Commit {
                 term,
                 index,
                 commond,
                 ..
-            } => self.sm.apply_log(term, index, commond),
+            } => self.sm.apply_log(*term, *index, commond),
             Entry::LeaderChange {
                 term,
                 index,
                 leader,
                 ..
             } => {
-                if self.is_leader().await {
+                let leader = *leader;
+                let term = *term;
+                if self.is_leader().await && leader != self.node_id {
                     self.to_follower().await;
                 }
                 self.leader.store(leader, SeqCst);
                 self.term.store(term, SeqCst);
-                self.sm.apply_leader_change(term, index, leader).await
+                self.sm.apply_leader_change(term, *index, leader).await
             }
             Entry::MemberChange {
                 term,
@@ -221,10 +225,12 @@ impl Raft {
             } => {
                 //if change member equal self node id and
                 // index before node raft create, skip this log
-                if self.start_index > index && node_id == self.node_id {
+                let node_id = *node_id;
+                if self.start_index > *index && node_id == self.node_id {
                     return Ok(());
                 }
 
+                let action = *action;
                 let exists = {
                     let replicas = &mut *self.replicas.write().await;
                     let exists = replicas.contains(&node_id);
@@ -241,7 +247,7 @@ impl Raft {
                 };
 
                 self.sm
-                    .apply_member_change(term, index, node_id, action, exists)
+                    .apply_member_change(*term, *index, node_id, action, exists)
             }
             _ => panic!("not support!!!!!!"),
         }
@@ -272,7 +278,7 @@ impl Raft {
             && self.store.last_applied().await < applied
         {
             self.applied.store(applied, SeqCst);
-            self.notify();
+            self.notify().await;
         }
 
         if self.leader.load(SeqCst) != leader {
@@ -301,7 +307,7 @@ impl Raft {
         }
     }
 
-    pub async fn leader_change(&self, leader: u64, term: u64, index: u64) -> RaftResult<()> {
+    pub async fn leader_change(&self, term: u64, index: u64, leader: u64) -> RaftResult<()> {
         let self_term = self.term.load(SeqCst);
         if self_term > term {
             return Err(RaftError::TermLess);
@@ -311,12 +317,12 @@ impl Raft {
         self.last_heart.store(current_millis(), SeqCst);
 
         if self.store.last_applied().await < index {
-            self.notify();
+            self.notify().await;
         }
 
         self.leader.store(leader, SeqCst);
 
-        let _ = self.sm.apply_leader_change(leader, term, index);
+        let _ = self.sm.apply_leader_change(term, index, leader);
 
         return Ok(());
     }
@@ -362,7 +368,7 @@ impl Raft {
         if let Entry::Commit { term: t, .. } = self.store.log_mem.read().await.get(index) {
             if *t == term {
                 self.applied.store(index, SeqCst);
-                self.notify();
+                self.notify().await;
                 return Ok(());
             } else if *t < term {
                 return Err(RaftError::TermLess);
@@ -401,21 +407,23 @@ impl Raft {
                 self.to_follower().await;
                 return Err(e);
             }
-            return Ok(false);
+            return Ok(true);
         }
     }
 
     //put empty log
     async fn to_leader(self: &Arc<Raft>) -> RaftResult<()> {
         info!("raft_node:{} to leader ", self.node_id);
-        let mut state = self.state.write().await;
-        if let RaftState::Leader = *state {
-            return Ok(());
-        };
-        *state = RaftState::Leader;
+        {
+            let mut state = self.state.write().await;
+            if let RaftState::Leader = *state {
+                return Ok(());
+            };
+            *state = RaftState::Leader;
+        }
+
         self.term.fetch_add(1, SeqCst);
         self.last_heart.store(current_millis(), SeqCst);
-
         self.commit(Entry::LeaderChange {
             pre_term: self.store.last_term().await,
             term: self.term.load(SeqCst),
@@ -433,7 +441,7 @@ impl Raft {
         };
         *state = RaftState::Follower;
         self.last_heart.store(current_millis(), SeqCst);
-        self.notify();
+        self.notify().await;
     }
 
     async fn to_voter(self: &Arc<Raft>, term: u64) -> RaftResult<()> {
@@ -474,19 +482,19 @@ impl Raft {
         let raft = self.clone();
         task::spawn(async move {
             while !raft.stopd.load(SeqCst) {
-                let mut need_apply = raft.applied.load(SeqCst);
-                if need_apply <= raft.store.last_applied().await {
-                    raft.applied_tx_rx.1.recv().await.unwrap();
-                    continue;
-                }
-
                 if raft.is_leader().await {
-                    raft.applied_tx_rx.1.recv().await.unwrap();
+                    raft.notified().await;
                 } else {
+                    let mut need_apply = raft.applied.load(SeqCst);
+                    if need_apply <= raft.store.last_applied().await {
+                        raft.notified().await;
+                        continue;
+                    }
+
                     if need_apply > raft.store.last_index().await {
                         if log_enabled!(Debug) {
                             debug!(
-                                "need_apply:{} leass than raft last_index:{} applied:{}",
+                                "need_apply:{} less than raft last_index:{} applied:{}",
                                 need_apply,
                                 raft.store.last_index().await,
                                 raft.store.last_applied().await
@@ -494,19 +502,12 @@ impl Raft {
                         }
                         need_apply = raft.store.last_index().await;
                     }
-                    match raft.store.save_to_log(need_apply).await {
-                        Err(e) => error!("store save_to_log has err:{}", e),
-                        Ok(index) => {
-                            if let Err(e) = raft.apply(index).await {
-                                error!("apply index:{} has err:{}", index, e);
-                            }
-                        }
-                    }
-                    if raft.store.last_applied().await >= need_apply {
-                        raft.applied_tx_rx.1.recv().await.unwrap();
+                    if let Err(e) = raft.store.save_to_log(need_apply, &raft).await {
+                        error!("store save_to_log has err:{}", e);
                     }
                 }
             }
+            println!("out loop .........................");
         });
 
         let raft = self.clone();
@@ -527,7 +528,7 @@ impl Raft {
                     if current_millis() - raft.last_heart.load(SeqCst) > raft.conf.heartbeate_ms * 3
                     {
                         info!(
-                            "{} too long time recived heartbeat , try to leader",
+                            "{} too long time receive heartbeat , try to leader",
                             raft.conf.node_id
                         );
                         //rand sleep to elect

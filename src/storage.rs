@@ -1,6 +1,8 @@
 use crate::entity::*;
 use crate::error::*;
+use crate::raft::Raft;
 use async_std::sync::RwLock;
+use log::error;
 use log::warn;
 use std::fs;
 use std::io;
@@ -76,7 +78,7 @@ impl RaftLogIter {
             return Err(RaftError::LogFileInvalid(self.ids()[index]));
         }
         let mut buf = vec![0; dl as usize];
-        conver(self.file().read_exact(&mut buf))?;
+        convert(self.file().read_exact(&mut buf))?;
         self.current_index += 1;
         self.file_offset += dl;
 
@@ -85,7 +87,7 @@ impl RaftLogIter {
             if self.file_index >= self.ids().len() {
                 self.file = None;
             } else {
-                let file = conver(
+                let file = convert(
                     fs::OpenOptions::new().read(true).open(
                         self.dir
                             .as_ref()
@@ -120,10 +122,10 @@ impl RaftLog {
     pub fn new(id: u64, conf: Arc<Config>) -> RaftResult<Self> {
         let dir = Path::new(&conf.log_path).join(format!("{}", id));
         if !dir.exists() {
-            conver(fs::create_dir_all(&dir))?;
+            convert(fs::create_dir_all(&dir))?;
         }
 
-        let mut file_ids: Vec<u64> = conver(fs::read_dir(&dir))?
+        let mut file_ids: Vec<u64> = convert(fs::read_dir(&dir))?
             .filter_map(|r| {
                 let path = r.unwrap().path();
                 if path.is_file() {
@@ -194,7 +196,7 @@ impl RaftLog {
             };
 
             let id = ids[start_index];
-            let file = conver(
+            let file = convert(
                 fs::OpenOptions::new()
                     .read(true)
                     .open(dir.join(format!("{}{}{}", FILE_START, id, FILE_END))),
@@ -220,7 +222,7 @@ impl RaftLog {
                 if offset + dl > file_len {
                     return Err(RaftError::LogFileInvalid(id));
                 }
-                conver(file.seek(io::SeekFrom::Current(dl as i64)))?;
+                convert(file.seek(io::SeekFrom::Current(dl as i64)))?;
                 offset += dl;
                 if offset + 4 > file_len {
                     return Err(RaftError::LogFileInvalid(id));
@@ -357,11 +359,11 @@ impl RaftLog {
 
     //if this function has err ,Means that raft may not work anymore
     // If an IO error, such as insufficient disk space, the data will be unclean. Or an unexpected error occurred
-    pub async fn save_to_log(&self, target_applied: u64) -> RaftResult<u64> {
+    pub async fn save_to_log(&self, target_applied: u64, raft: &Arc<Raft>) -> RaftResult<()> {
         let index = {
             let mem = self.log_mem.read().await;
             if mem.applied >= target_applied || mem.committed < target_applied {
-                return Ok(0);
+                return Ok(());
             }
             let entry = mem.get(mem.applied + 1);
             let bs = entry.encode();
@@ -373,17 +375,22 @@ impl RaftLog {
             if let Err(err) = file.writer.write(&bs) {
                 return Err(RaftError::IOError(err.to_string()));
             }
-            conver(file.writer.flush())?;
+            convert(file.writer.flush())?;
             file.offset = file.offset + bs.len() as u64;
             if let Some(_) = self.lock_truncation.try_write() {
                 if file.offset >= self.conf.log_file_size_mb * 1024 * 1024 {
                     file.log_rolling(index + 1)?;
                 }
             };
+
+            if let Err(e) = raft.apply(entry).await {
+                error!("apply index:{} has err:{}", index, e);
+            }
+
             index
         };
         self.log_mem.write().await.applied = index;
-        Ok(index)
+        Ok(())
     }
 }
 // term , committed stands last entry info.
@@ -430,7 +437,7 @@ impl LogFile {
         let file_path = dir.join(format!("{}{}{}", FILE_START, ids[ids.len() - 1], FILE_END));
         let mut writer = io::BufWriter::with_capacity(
             BUF_SIZE,
-            conver(
+            convert(
                 fs::OpenOptions::new()
                     .create(true)
                     .append(true)
@@ -441,7 +448,7 @@ impl LogFile {
         );
 
         if offset > 0 {
-            conver(writer.seek(io::SeekFrom::Start(offset)))?;
+            convert(writer.seek(io::SeekFrom::Start(offset)))?;
         }
 
         Ok(LogFile {
@@ -473,7 +480,7 @@ impl LogFile {
                 return Err(RaftError::LogFileNotFound(file_id));
             }
         }
-        let file = conver(fs::OpenOptions::new().read(true).open(&file_path))?;
+        let file = convert(fs::OpenOptions::new().read(true).open(&file_path))?;
 
         let mut offset: u64 = 0;
         let mut len = file.metadata().unwrap().len();
@@ -497,9 +504,9 @@ impl LogFile {
             if len - offset <= 4 {
                 len = offset - 4;
                 offset = pre_offset;
-                conver(file.seek(io::SeekFrom::Start(offset)))?;
+                convert(file.seek(io::SeekFrom::Start(offset)))?;
                 // if file has  dirty data, change to valid length
-                conver(
+                convert(
                     fs::OpenOptions::new()
                         .write(true)
                         .open(&file_path)
@@ -522,9 +529,9 @@ impl LogFile {
                 }
                 len = offset - 4;
                 offset = pre_offset;
-                conver(file.seek(io::SeekFrom::Start(offset)))?;
+                convert(file.seek(io::SeekFrom::Start(offset)))?;
                 // if file has  dirty data, change to valid length
-                conver(
+                convert(
                     fs::OpenOptions::new()
                         .write(true)
                         .open(&file_path)
@@ -532,7 +539,7 @@ impl LogFile {
                         .set_len(len),
                 )?;
             } else {
-                conver(file.seek(io::SeekFrom::Current(dl as i64)))?;
+                convert(file.seek(io::SeekFrom::Current(dl as i64)))?;
                 pre_offset = offset - 4;
                 offset += dl;
             }
@@ -540,9 +547,9 @@ impl LogFile {
     }
 
     fn log_rolling(&mut self, new_id: u64) -> RaftResult<()> {
-        conver(self.writer.flush())?;
+        convert(self.writer.flush())?;
 
-        let file = conver(
+        let file = convert(
             fs::OpenOptions::new()
                 .create(true)
                 .read(true)
@@ -562,12 +569,12 @@ impl LogFile {
 
 fn read_u32(file: &mut io::BufReader<fs::File>) -> RaftResult<u32> {
     let mut output = [0u8; 4];
-    conver(file.read_exact(&mut output[..]))?;
+    convert(file.read_exact(&mut output[..]))?;
     Ok(u32::from_be_bytes(output))
 }
 
 pub fn validate_log_file(path: std::path::PathBuf, check: bool) -> RaftResult<u64> {
-    let file = conver(fs::OpenOptions::new().read(true).open(&path))?;
+    let file = convert(fs::OpenOptions::new().read(true).open(&path))?;
     let mut offset: usize = 0;
     let len = file.metadata().unwrap().len();
 
@@ -586,7 +593,7 @@ pub fn validate_log_file(path: std::path::PathBuf, check: bool) -> RaftResult<u6
             return Err(RaftError::Error(format!("lenth is err:{}", dl)));
         }
         let mut buf = vec![0; dl as usize];
-        conver(file.read_exact(&mut buf))?;
+        convert(file.read_exact(&mut buf))?;
         offset += buf.len();
 
         let e = Entry::decode(&buf)?;

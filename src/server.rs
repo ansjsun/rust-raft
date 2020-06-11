@@ -174,6 +174,7 @@ impl RaftServer {
                 let applied_index = *index - 1;
                 raft.store.commit(entry).await?;
                 raft.applied.store(applied_index, SeqCst);
+                raft.notify().await;
                 Ok(())
             }
             Entry::Vote {
