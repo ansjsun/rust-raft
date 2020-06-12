@@ -6,11 +6,7 @@ use std::sync::Arc;
 
 #[async_std::main]
 async fn main() {
-    env_logger::init_from_env(
-        env_logger::Env::default()
-            .filter_or("MY_LOG_LEVEL", "debug")
-            .write_style_or("auto", "always"),
-    );
+    env_logger::init_from_env(env_logger::Env::default().write_style_or("auto", "always"));
 
     debug!("start............");
 
@@ -24,11 +20,11 @@ async fn main() {
         .create_raft(1, 0, 1, replicas, SM { id: 1 })
         .await
         .unwrap();
-    let _raft2 = server2
+    let raft2 = server2
         .create_raft(1, 0, 1, replicas, SM { id: 2 })
         .await
         .unwrap();
-    let _raft3 = server3
+    let raft3 = server3
         .create_raft(1, 0, 1, replicas, SM { id: 3 })
         .await
         .unwrap();
@@ -40,15 +36,19 @@ async fn main() {
         std::thread::sleep(std::time::Duration::from_secs(1));
         info!("wait raft1 to leader times");
     }
-    for i in 0..1000000u32 {
+    for i in 0..10000000u32 {
         if let Err(e) = raft1
             .submit(unsafe { format!("commit: {}", i + 1).as_mut_vec().clone() })
             .await
         {
-            println!("{}", e);
+            println!("{:?}", e);
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
     }
+
+    println!("raft1:{:?}", raft1.info().await);
+    println!("raft2:{:?}", raft2.info().await);
+    println!("raft3:{:?}", raft3.info().await);
 
     std::thread::sleep(std::time::Duration::from_secs(10000));
 }

@@ -285,7 +285,7 @@ pub struct Config {
     pub heartbeate_ms: u64,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum RaftState {
     //leader id
     Follower,

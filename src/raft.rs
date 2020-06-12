@@ -29,7 +29,7 @@ impl Vote {
         return true;
     }
 }
-
+#[derive(Debug)]
 pub struct RaftInfo {
     pub id: u64,
     pub node_id: u64,
@@ -167,9 +167,7 @@ impl Raft {
         if !self.is_leader().await {
             return Err(RaftError::NotLeader(self.leader.load(SeqCst)));
         }
-
         let index = self.store.commit(entry).await?;
-
         let e = {
             if let Err(e) = self
                 .sender
@@ -181,12 +179,10 @@ impl Raft {
                 None
             }
         };
-
         if let Some(e) = e {
             self.store.rollback().await;
             return Err(e);
         }
-
         self.applied.store(index, SeqCst);
         self.store.save_to_log(index, self).await
     }
@@ -294,7 +290,10 @@ impl Raft {
         }
 
         if self.store.last_index().await > committed {
-            return Err(RaftError::IndexLess(committed));
+            return Err(RaftError::IndexLess(
+                self.store.last_index().await,
+                committed,
+            ));
         }
         self.last_heart.store(current_millis(), SeqCst);
 
@@ -362,7 +361,7 @@ impl Raft {
         }
 
         if self.store.last_index().await < index {
-            return Err(RaftError::IndexLess(self.store.last_index().await));
+            return Err(RaftError::IndexLess(self.store.last_index().await, index));
         }
 
         if let Entry::Commit { term: t, .. } = self.store.log_mem.read().await.get(index) {
@@ -376,7 +375,7 @@ impl Raft {
                 return Err(RaftError::TermGreater);
             }
         };
-        return Err(RaftError::IndexLess(self.store.last_index().await));
+        return Err(RaftError::IndexLess(self.store.last_index().await, index));
     }
 
     pub async fn info(&self) -> RaftInfo {
@@ -407,6 +406,7 @@ impl Raft {
                 self.to_follower().await;
                 return Err(e);
             }
+
             return Ok(true);
         }
     }
@@ -421,7 +421,6 @@ impl Raft {
             };
             *state = RaftState::Leader;
         }
-
         self.term.fetch_add(1, SeqCst);
         self.last_heart.store(current_millis(), SeqCst);
         self.commit(Entry::LeaderChange {

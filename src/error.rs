@@ -16,8 +16,8 @@ pub enum RaftError {
     TermLess,
     #[error("term greater than target machine")]
     TermGreater,
-    #[error("index:{0} less than target machine ")]
-    IndexLess(u64),
+    #[error("index:{0} less than target machine:{1} ")]
+    IndexLess(u64, u64),
     #[error("vote not allow")]
     VoteNotAllow,
     #[error("type has err")]
@@ -54,7 +54,7 @@ impl RaftError {
             RaftError::NotfoundAddr(_) => 4,
             RaftError::TermLess => 5,
             RaftError::TermGreater => 6,
-            RaftError::IndexLess(_) => 7,
+            RaftError::IndexLess(_, _) => 7,
             RaftError::VoteNotAllow => 8,
             RaftError::TypeErr => 9,
             RaftError::RaftNotFound(_) => 10,
@@ -99,7 +99,6 @@ impl RaftError {
                 result.extend_from_slice(msg.as_str().as_bytes());
             }
             RaftError::NotfoundAddr(num)
-            | RaftError::IndexLess(num)
             | RaftError::RaftNotFound(num)
             | RaftError::NotLeader(num)
             | RaftError::LogFileNotFound(num)
@@ -110,6 +109,12 @@ impl RaftError {
                 result = Vec::with_capacity(9);
                 result.push(self.id());
                 result.extend_from_slice(&u64::to_be_bytes(*num));
+            }
+            RaftError::IndexLess(index, target) => {
+                result = Vec::with_capacity(17);
+                result.push(self.id());
+                result.extend_from_slice(&u64::to_be_bytes(*index));
+                result.extend_from_slice(&u64::to_be_bytes(*target));
             }
             RaftError::NotEnoughRecipient(expect, got) => {
                 result = Vec::with_capacity(5);
@@ -140,7 +145,7 @@ impl RaftError {
             4 => RaftError::NotfoundAddr(read_u64_slice(data, 1)),
             5 => RaftError::TermLess,
             6 => RaftError::TermGreater,
-            7 => RaftError::IndexLess(read_u64_slice(data, 1)),
+            7 => RaftError::IndexLess(read_u64_slice(data, 1), read_u64_slice(data, 9)),
             8 => RaftError::VoteNotAllow,
             9 => RaftError::TypeErr,
             10 => RaftError::RaftNotFound(read_u64_slice(data, 1)),

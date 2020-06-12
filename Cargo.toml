@@ -11,7 +11,7 @@ thiserror = "1.0.19"
 futures = { version = "0.3.5", default-features = false, features = ["std"] }
 futures-util = { version = "0.3.5", default-features = false, features = ["std"] }
 futures-io = { version = "0.3.5", default-features = false, features = ["std"] }
-async-std = { version = "1.6.0", features = ["default","unstable"]}
+async-std = { version = "1.6.0", features = ["default","unstable","attributes"]}
 rand = "0.7.3"
 deadpool = "0.5.1"
 async-trait = "0.1.33"

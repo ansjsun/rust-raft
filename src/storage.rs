@@ -2,13 +2,12 @@ use crate::entity::*;
 use crate::error::*;
 use crate::raft::Raft;
 use async_std::sync::RwLock;
-use log::error;
-use log::warn;
+use log::{error, info, warn};
 use std::fs;
 use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 
 static FILE_START: &str = "raft_";
 static FILE_END: &str = ".log";
@@ -19,7 +18,7 @@ pub struct RaftLog {
     conf: Arc<Config>,
     pub log_mem: RwLock<LogMem>,
     log_file: RwLock<LogFile>,
-    lock_truncation: RwLock<usize>,
+    lock_truncation: Arc<StdRwLock<usize>>,
 }
 
 pub struct RaftLogIter {
@@ -30,6 +29,13 @@ pub struct RaftLogIter {
     file_len: u64,
     file_offset: u64,
     current_index: u64,
+    lock_truncation: Arc<StdRwLock<usize>>,
+}
+
+impl Drop for RaftLogIter {
+    fn drop(&mut self) {
+        *self.lock_truncation.write().unwrap() -= 1
+    }
 }
 
 impl RaftLogIter {
@@ -62,6 +68,7 @@ impl RaftLogIter {
     async fn iter_file(&mut self, raft_log: &RaftLog) -> RaftResult<Option<Vec<u8>>> {
         if self.file_len - self.file_offset <= 4 {
             if self.current_index > raft_log.log_mem.read().await.offset {
+                self.file = None;
                 return self.iter_mem(raft_log).await;
             }
             let index = self.file_index;
@@ -72,6 +79,7 @@ impl RaftLogIter {
 
         if self.file_offset + dl > self.file_len {
             if self.current_index > raft_log.log_mem.read().await.offset {
+                self.file = None;
                 return self.iter_mem(raft_log).await;
             }
             let index = self.file_index;
@@ -175,7 +183,7 @@ impl RaftLog {
             conf: conf,
             log_mem: RwLock::new(log_mem),
             log_file: RwLock::new(log_file),
-            lock_truncation: RwLock::new(0),
+            lock_truncation: Arc::new(StdRwLock::new(0)),
         })
     }
 
@@ -205,6 +213,7 @@ impl RaftLog {
             let mut file = io::BufReader::new(file);
             let mut offset = 0;
             if id == index {
+                *self.lock_truncation.write().unwrap() += 1;
                 return Ok(RaftLogIter {
                     ids: Some(ids),
                     dir: Some(dir),
@@ -213,6 +222,7 @@ impl RaftLog {
                     file_len: file_len,
                     file_offset: offset,
                     current_index: index,
+                    lock_truncation: self.lock_truncation.clone(),
                 });
             }
 
@@ -229,6 +239,7 @@ impl RaftLog {
                 }
             }
 
+            *self.lock_truncation.write().unwrap() += 1;
             return Ok(RaftLogIter {
                 ids: Some(ids),
                 dir: Some(dir),
@@ -237,9 +248,11 @@ impl RaftLog {
                 file_len: file_len,
                 file_offset: offset,
                 current_index: index,
+                lock_truncation: self.lock_truncation.clone(),
             });
         }
 
+        *self.lock_truncation.write().unwrap() += 1;
         Ok(RaftLogIter {
             ids: None,
             dir: None,
@@ -248,6 +261,7 @@ impl RaftLog {
             file_len: 0,
             file_offset: 0,
             current_index: index,
+            lock_truncation: self.lock_truncation.clone(),
         })
     }
 
@@ -309,7 +323,7 @@ impl RaftLog {
                 _ => panic!("not support this type:{:?}", entry),
             }
         } else if new_index > mem.committed + 1 {
-            return Err(RaftError::IndexLess(mem.committed));
+            return Err(RaftError::IndexLess(mem.committed, new_index));
         } else if new_index < mem.committed + 1 {
             if new_index == mem.committed && term == mem.term {
                 return Ok(new_index);
@@ -326,7 +340,7 @@ impl RaftLog {
             let (term, index) = mem.get(mem.committed - 1).info();
             mem.committed = index;
             mem.term = term;
-            return Err(RaftError::IndexLess(index));
+            return Err(RaftError::IndexLess(index, new_index));
         }
 
         mem.logs.push(entry);
@@ -335,13 +349,17 @@ impl RaftLog {
         mem.term = term;
 
         if mem.logs.len() >= self.conf.log_max_num {
-            if let Some(_) = self.lock_truncation.try_write() {
-                let keep_num =
-                    usize::max(self.conf.log_min_num, (new_index - mem.applied) as usize);
-                if mem.logs.len() - keep_num > 10 {
-                    let off = mem.logs.len() - keep_num;
-                    mem.logs = mem.logs.split_off(off as usize);
-                    mem.offset = mem.offset + off as u64;
+            if let Ok(v) = self.lock_truncation.try_read() {
+                if *v == 0 {
+                    let keep_num =
+                        usize::max(self.conf.log_min_num, (new_index - mem.applied) as usize);
+                    if mem.logs.len() - keep_num > 10 {
+                        let off = mem.logs.len() - keep_num;
+                        mem.logs = mem.logs.split_off(off as usize);
+                        mem.offset = mem.offset + off as u64;
+                    }
+                } else {
+                    info!("lock_truncation is used:{} skip memory truncation", *v);
                 }
             }
         }
@@ -377,9 +395,12 @@ impl RaftLog {
             }
             convert(file.writer.flush())?;
             file.offset = file.offset + bs.len() as u64;
-            if let Some(_) = self.lock_truncation.try_write() {
-                if file.offset >= self.conf.log_file_size_mb * 1024 * 1024 {
+            if let Ok(v) = self.lock_truncation.try_read() {
+                if *v == 0 && file.offset >= self.conf.log_file_size_mb * 1024 * 1024 {
                     file.log_rolling(index + 1)?;
+                }
+                if *v != 0 {
+                    info!("lock_truncation is used:{} skip disk truncation", v);
                 }
             };
 

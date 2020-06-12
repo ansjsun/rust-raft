@@ -182,7 +182,6 @@ impl Peer {
             }
             *status = PeerStatus::Appending;
         }
-
         let mut conn = self.log_pool.get().await.unwrap();
         let conn = &mut conn;
 
@@ -225,8 +224,12 @@ impl Peer {
                 }
             }
         };
-
         *self.status.write().await = PeerStatus::Synchronizing;
+        warn!(
+            "end appending from index:{} for node_id:{}",
+            self.raft.store.last_index().await,
+            self.node_id
+        );
     }
 }
 
@@ -267,7 +270,6 @@ impl Sender {
         let body = Arc::new(body);
 
         let (tx, rx) = channel(peers.len());
-
         for p in &*peers {
             let peer = p.clone();
             let body = body.clone();
@@ -280,7 +282,7 @@ impl Sender {
                         };
 
                         match &e {
-                            RaftError::IndexLess(i) => {
+                            RaftError::IndexLess(i, _) => {
                                 if *peer.status.read().await == PeerStatus::Synchronizing {
                                     let index = *i;
                                     let peer = peer.clone();
@@ -294,7 +296,9 @@ impl Sender {
                         tx.send(e).await;
                     }
                     Err(e) => {
-                        error!("send log has err:{:?}", e);
+                        if RaftError::NotReady != e {
+                            error!("send log to node:{} has err:{:?}", peer.node_id, e);
+                        }
                         tx.send(e).await;
                     }
                 };
@@ -305,6 +309,9 @@ impl Sender {
 
         let mut ok = 0;
         let mut err = 0;
+
+        drop(tx);
+
         while let Ok(e) = rx.recv().await {
             if e == RaftError::Success {
                 ok += 1;
@@ -321,7 +328,8 @@ impl Sender {
                 }
             }
         }
-        return Err(RaftError::Timeout(5000)); //TODO full time
+
+        Ok(())
     }
 
     pub async fn add_peer(&self, node_id: u64, raft: Arc<Raft>) {
@@ -332,11 +340,11 @@ impl Sender {
         let log_pool = Pool::new(Manager::new(entry_type::COMMIT, node_id, raft.clone()), 5);
 
         let peer = Arc::new(Peer {
-            node_id: node_id,
+            node_id,
             raft_id: u64::to_be_bytes(raft.id),
             raft: raft.clone(),
-            heart_pool: heart_pool,
-            log_pool: log_pool,
+            heart_pool,
+            log_pool,
             status: RwLock::new(PeerStatus::Synchronizing),
         });
 
