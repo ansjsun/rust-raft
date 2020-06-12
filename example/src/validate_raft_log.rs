@@ -1,6 +1,6 @@
 mod config;
 use config::*;
-use log::{debug, info};
+use log::info;
 use raft4rs::server::Server;
 use std::sync::Arc;
 

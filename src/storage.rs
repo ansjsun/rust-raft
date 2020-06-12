@@ -74,7 +74,6 @@ impl RaftLogIter {
 
         if self.file_offset + dl > self.file_len() {
             if self.current_index > raft_log.log_mem.read().await.offset {
-                println!("...................................");
                 self.file = None;
                 return self.iter_mem(raft_log).await;
             }
@@ -101,10 +100,7 @@ impl RaftLogIter {
                         self.file = Some(f);
                         self.file_offset = 0;
                     }
-                    Err(e) => {
-                        println!("not foud ..................{}", self.current_index + 1);
-                        self.file = None;
-                    }
+                    Err(_) => self.file = None,
                 };
             } else {
                 let file = convert(fs::OpenOptions::new().read(true).open(
@@ -142,8 +138,6 @@ impl RaftLog {
         }
 
         let file_ids = RaftLog::file_ids(&dir)?;
-
-        println!("fieldids           {:?}", file_ids);
 
         let log_file: LogFile;
         let log_mem: LogMem;
@@ -186,9 +180,6 @@ impl RaftLog {
     /// search all filed start id , and sorted
     fn file_ids(dir: &PathBuf) -> RaftResult<Vec<u64>> {
         let mut file_ids = vec![];
-        fs::read_dir(&dir)
-            .unwrap()
-            .for_each(|v| println!("{:?}", v));
         for file in convert(fs::read_dir(&dir))? {
             let meta = file.as_ref().unwrap().metadata().unwrap();
             if !meta.is_file() {
@@ -241,7 +232,6 @@ impl RaftLog {
                     }
                 }
             };
-
             let id = ids[start_index];
             let mut file = convert(
                 fs::OpenOptions::new()
@@ -415,7 +405,7 @@ impl RaftLog {
             if let Err(err) = file.writer.write(&bs) {
                 return Err(RaftError::IOError(err.to_string()));
             }
-            convert(file.writer.flush())?;
+
             file.offset = file.offset + bs.len() as u64;
             if file.offset >= self.conf.log_file_size_mb * 1024 * 1024 {
                 file.log_rolling(index + 1)?;
@@ -544,7 +534,7 @@ impl LogFile {
                 ));
             }
 
-            if len - offset <= 4 {
+            if len < offset || len - offset <= 4 {
                 len = offset - 4;
                 offset = pre_offset;
                 convert(file.seek(io::SeekFrom::Start(offset)))?;
@@ -623,9 +613,4 @@ fn test_validate_log_file() {
     let path = Path::new("example/data/raft1")
         .join(format!("{}", raft_id))
         .join(format!("{}{}{}", FILE_START, file_id, FILE_END));
-    println!("dir....{:?}", path);
-    println!(
-        "result:.................{}",
-        validate_log_file(path, false).unwrap()
-    );
 }

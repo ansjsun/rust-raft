@@ -506,7 +506,6 @@ impl Raft {
                     }
                 }
             }
-            println!("out loop .........................");
         });
 
         let raft = self.clone();
@@ -518,8 +517,8 @@ impl Raft {
                     let ie = Entry::Heartbeat {
                         term: raft.term.load(SeqCst),
                         leader: raft.conf.node_id,
-                        committed: committed,
-                        applied: applied,
+                        committed,
+                        applied,
                     };
 
                     raft.sender.send_heartbeat(ie.encode()).await;
