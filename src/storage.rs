@@ -89,8 +89,23 @@ impl RaftLogIter {
         if self.file_offset == self.file_len() {
             self.file_index += 1;
             if self.file_index >= self.ids().len() {
-                println!("===============================================..");
-                self.file = None;
+                match convert(fs::OpenOptions::new().read(true).open(
+                    self.dir.as_ref().unwrap().clone().join(format!(
+                        "{}{}{}",
+                        FILE_START,
+                        self.current_index + 1,
+                        FILE_END
+                    )),
+                )) {
+                    Ok(f) => {
+                        self.file = Some(f);
+                        self.file_offset = 0;
+                    }
+                    Err(e) => {
+                        println!("not foud ..................{}", self.current_index + 1);
+                        self.file = None;
+                    }
+                };
             } else {
                 let file = convert(fs::OpenOptions::new().read(true).open(
                     self.dir.as_ref().unwrap().clone().join(format!(
