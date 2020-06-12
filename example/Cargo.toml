@@ -8,6 +8,9 @@ edition = "2018"
 name = "rust-raft-example"
 path = "src/main.rs"
 
+[[bin]]
+name = "validate_raft_log"
+path = "src/validate_raft_log.rs"
 
 [dependencies]
 log = "0.4"

@@ -2,12 +2,12 @@ use crate::entity::*;
 use crate::error::*;
 use crate::raft::Raft;
 use async_std::sync::RwLock;
-use log::{error, info, warn};
+use log::{error, warn};
 use std::fs;
 use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock as StdRwLock};
+use std::sync::Arc;
 
 static FILE_START: &str = "raft_";
 static FILE_END: &str = ".log";
@@ -18,27 +18,22 @@ pub struct RaftLog {
     conf: Arc<Config>,
     pub log_mem: RwLock<LogMem>,
     log_file: RwLock<LogFile>,
-    lock_truncation: Arc<StdRwLock<usize>>,
 }
 
 pub struct RaftLogIter {
     ids: Option<Vec<u64>>,
     dir: Option<PathBuf>,
     file_index: usize,
-    file: Option<io::BufReader<fs::File>>,
-    file_len: u64,
+    file: Option<fs::File>,
     file_offset: u64,
     current_index: u64,
-    lock_truncation: Arc<StdRwLock<usize>>,
-}
-
-impl Drop for RaftLogIter {
-    fn drop(&mut self) {
-        *self.lock_truncation.write().unwrap() -= 1
-    }
 }
 
 impl RaftLogIter {
+    fn file_len(&self) -> u64 {
+        self.file.as_ref().unwrap().metadata().unwrap().len()
+    }
+
     pub async fn next(&mut self, raft_log: &RaftLog) -> RaftResult<Option<Vec<u8>>> {
         if self.file.is_some() {
             self.iter_file(raft_log).await
@@ -60,13 +55,13 @@ impl RaftLogIter {
             .log_mem
             .read()
             .await
-            .get(self.current_index)
+            .get(self.current_index)?
             .encode();
         return Ok(Some(v));
     }
 
     async fn iter_file(&mut self, raft_log: &RaftLog) -> RaftResult<Option<Vec<u8>>> {
-        if self.file_len - self.file_offset <= 4 {
+        if self.file_len() - self.file_offset <= 4 {
             if self.current_index > raft_log.log_mem.read().await.offset {
                 self.file = None;
                 return self.iter_mem(raft_log).await;
@@ -74,11 +69,12 @@ impl RaftLogIter {
             let index = self.file_index;
             return Err(RaftError::LogFileInvalid(self.ids()[index]));
         }
-        let dl = read_u32(&mut self.file())? as u64;
+        let dl = read_u32(self.file.as_mut().unwrap())? as u64;
         self.file_offset += 4;
 
-        if self.file_offset + dl > self.file_len {
+        if self.file_offset + dl > self.file_len() {
             if self.current_index > raft_log.log_mem.read().await.offset {
+                println!("...................................");
                 self.file = None;
                 return self.iter_mem(raft_log).await;
             }
@@ -90,24 +86,21 @@ impl RaftLogIter {
         self.current_index += 1;
         self.file_offset += dl;
 
-        if self.file_offset == self.file_len {
+        if self.file_offset == self.file_len() {
             self.file_index += 1;
             if self.file_index >= self.ids().len() {
+                println!("===============================================..");
                 self.file = None;
             } else {
-                let file = convert(
-                    fs::OpenOptions::new().read(true).open(
-                        self.dir
-                            .as_ref()
-                            .unwrap()
-                            .clone()
-                            .join(format!("{}{}{}", FILE_START, self.file_index, FILE_END)),
-                    ),
-                )?;
-                let file_len = file.metadata().unwrap().len();
-                let file = io::BufReader::new(file);
+                let file = convert(fs::OpenOptions::new().read(true).open(
+                    self.dir.as_ref().unwrap().clone().join(format!(
+                        "{}{}{}",
+                        FILE_START,
+                        self.ids.as_ref().unwrap()[self.file_index],
+                        FILE_END
+                    )),
+                ))?;
                 self.file = Some(file);
-                self.file_len = file_len;
                 self.file_offset = 0;
             }
         }
@@ -115,7 +108,7 @@ impl RaftLogIter {
         return Ok(Some(buf));
     }
 
-    fn file(&mut self) -> &mut io::BufReader<fs::File> {
+    fn file(&mut self) -> &mut fs::File {
         self.file.as_mut().unwrap()
     }
 
@@ -133,20 +126,9 @@ impl RaftLog {
             convert(fs::create_dir_all(&dir))?;
         }
 
-        let mut file_ids: Vec<u64> = convert(fs::read_dir(&dir))?
-            .filter_map(|r| {
-                let path = r.unwrap().path();
-                if path.is_file() {
-                    Some(path.file_name().unwrap().to_str().unwrap().to_string())
-                } else {
-                    None
-                }
-            })
-            .filter(|name| name.starts_with(FILE_START) && name.ends_with(FILE_END))
-            .map(|name| name[5..name.len() - 4].parse::<u64>().unwrap())
-            .collect();
+        let file_ids = RaftLog::file_ids(&dir)?;
 
-        file_ids.sort_by(|a, b| a.cmp(b));
+        println!("fieldids           {:?}", file_ids);
 
         let log_file: LogFile;
         let log_mem: LogMem;
@@ -183,8 +165,50 @@ impl RaftLog {
             conf: conf,
             log_mem: RwLock::new(log_mem),
             log_file: RwLock::new(log_file),
-            lock_truncation: Arc::new(StdRwLock::new(0)),
         })
+    }
+
+    /// search all filed start id , and sorted
+    fn file_ids(dir: &PathBuf) -> RaftResult<Vec<u64>> {
+        let mut file_ids = vec![];
+        fs::read_dir(&dir)
+            .unwrap()
+            .for_each(|v| println!("{:?}", v));
+        for file in convert(fs::read_dir(&dir))? {
+            let meta = file.as_ref().unwrap().metadata().unwrap();
+            if !meta.is_file() {
+                continue;
+            }
+
+            if let Some(name) = file.as_ref().unwrap().file_name().to_str() {
+                if name.starts_with(FILE_START) && name.ends_with(FILE_END) {
+                    file_ids.push(name[5..name.len() - 4].parse::<u64>().unwrap());
+                }
+            };
+        }
+
+        file_ids.sort_by(|a, b| a.cmp(b));
+        Ok(file_ids)
+    }
+
+    pub async fn validate_log_file(&self, mut start_index: u64) -> RaftResult<()> {
+        if start_index == 0 {
+            start_index = 1;
+        }
+        let mut iter = self.iter(start_index).await?;
+        let mut pre_index = start_index - 1;
+        while let Some(buf) = iter.next(&self).await? {
+            let e = Entry::decode(&buf)?;
+            pre_index += 1;
+            let (_, index) = e.info();
+            if pre_index != index {
+                return Err(RaftError::Error(format!(
+                    "id is not continuous pre:{} now:{}",
+                    pre_index, index
+                )));
+            }
+        }
+        Ok(())
     }
 
     //it to instance a intertor , use it first lock_truncation, my be will panic if not lock lock_truncation;
@@ -204,25 +228,21 @@ impl RaftLog {
             };
 
             let id = ids[start_index];
-            let file = convert(
+            let mut file = convert(
                 fs::OpenOptions::new()
                     .read(true)
                     .open(dir.join(format!("{}{}{}", FILE_START, id, FILE_END))),
             )?;
             let file_len = file.metadata().unwrap().len();
-            let mut file = io::BufReader::new(file);
             let mut offset = 0;
             if id == index {
-                *self.lock_truncation.write().unwrap() += 1;
                 return Ok(RaftLogIter {
                     ids: Some(ids),
                     dir: Some(dir),
                     file_index: start_index,
                     file: Some(file),
-                    file_len: file_len,
                     file_offset: offset,
                     current_index: index,
-                    lock_truncation: self.lock_truncation.clone(),
                 });
             }
 
@@ -239,29 +259,23 @@ impl RaftLog {
                 }
             }
 
-            *self.lock_truncation.write().unwrap() += 1;
             return Ok(RaftLogIter {
                 ids: Some(ids),
                 dir: Some(dir),
                 file_index: start_index,
                 file: Some(file),
-                file_len: file_len,
                 file_offset: offset,
                 current_index: index,
-                lock_truncation: self.lock_truncation.clone(),
             });
         }
 
-        *self.lock_truncation.write().unwrap() += 1;
         Ok(RaftLogIter {
             ids: None,
             dir: None,
             file_index: 0,
             file: None,
-            file_len: 0,
             file_offset: 0,
             current_index: index,
-            lock_truncation: self.lock_truncation.clone(),
         })
     }
 
@@ -337,7 +351,7 @@ impl RaftLog {
             //if not same pre term , means last entry is invalided . rolled bak
             let new_len = mem.committed as usize - 1;
             unsafe { mem.logs.set_len(new_len) };
-            let (term, index) = mem.get(mem.committed - 1).info();
+            let (term, index) = mem.get_uncheck(mem.committed - 1).info();
             mem.committed = index;
             mem.term = term;
             return Err(RaftError::IndexLess(index, new_index));
@@ -349,18 +363,11 @@ impl RaftLog {
         mem.term = term;
 
         if mem.logs.len() >= self.conf.log_max_num {
-            if let Ok(v) = self.lock_truncation.try_read() {
-                if *v == 0 {
-                    let keep_num =
-                        usize::max(self.conf.log_min_num, (new_index - mem.applied) as usize);
-                    if mem.logs.len() - keep_num > 10 {
-                        let off = mem.logs.len() - keep_num;
-                        mem.logs = mem.logs.split_off(off as usize);
-                        mem.offset = mem.offset + off as u64;
-                    }
-                } else {
-                    info!("lock_truncation is used:{} skip memory truncation", *v);
-                }
+            let keep_num = usize::max(self.conf.log_min_num, (new_index - mem.applied) as usize);
+            if mem.logs.len() - keep_num > 10 {
+                let off = mem.logs.len() - keep_num;
+                mem.logs = mem.logs.split_off(off as usize);
+                mem.offset = mem.offset + off as u64;
             }
         }
 
@@ -383,7 +390,7 @@ impl RaftLog {
             if mem.applied >= target_applied || mem.committed < target_applied {
                 return Ok(());
             }
-            let entry = mem.get(mem.applied + 1);
+            let entry = mem.get_uncheck(mem.applied + 1);
             let bs = entry.encode();
             let (_, index) = entry.info();
             let mut file = self.log_file.write().await;
@@ -395,14 +402,9 @@ impl RaftLog {
             }
             convert(file.writer.flush())?;
             file.offset = file.offset + bs.len() as u64;
-            if let Ok(v) = self.lock_truncation.try_read() {
-                if *v == 0 && file.offset >= self.conf.log_file_size_mb * 1024 * 1024 {
-                    file.log_rolling(index + 1)?;
-                }
-                if *v != 0 {
-                    info!("lock_truncation is used:{} skip disk truncation", v);
-                }
-            };
+            if file.offset >= self.conf.log_file_size_mb * 1024 * 1024 {
+                file.log_rolling(index + 1)?;
+            }
 
             if let Err(e) = raft.apply(entry).await {
                 error!("apply index:{} has err:{}", index, e);
@@ -440,8 +442,15 @@ impl LogMem {
     }
 
     // if use this function make sure, the log index is exists, if not it will panic.
-    pub fn get(&self, index: u64) -> &Entry {
+    pub fn get_uncheck(&self, index: u64) -> &Entry {
         return self.logs.get((index - self.offset - 1) as usize).unwrap();
+    }
+
+    pub fn get(&self, index: u64) -> RaftResult<&Entry> {
+        match self.logs.get((index - self.offset - 1) as usize) {
+            Some(e) => Ok(e),
+            None => Err(RaftError::OutMemIndex(index)),
+        }
     }
 }
 
@@ -501,13 +510,11 @@ impl LogFile {
                 return Err(RaftError::LogFileNotFound(file_id));
             }
         }
-        let file = convert(fs::OpenOptions::new().read(true).open(&file_path))?;
+        let mut file = convert(fs::OpenOptions::new().read(true).open(&file_path))?;
 
         let mut offset: u64 = 0;
         let mut len = file.metadata().unwrap().len();
         let mut pre_offset: u64 = 0;
-
-        let mut file = io::BufReader::new(file);
 
         loop {
             if len == 0 {
@@ -588,49 +595,10 @@ impl LogFile {
     }
 }
 
-fn read_u32(file: &mut io::BufReader<fs::File>) -> RaftResult<u32> {
+fn read_u32(file: &mut fs::File) -> RaftResult<u32> {
     let mut output = [0u8; 4];
     convert(file.read_exact(&mut output[..]))?;
     Ok(u32::from_be_bytes(output))
-}
-
-pub fn validate_log_file(path: std::path::PathBuf, check: bool) -> RaftResult<u64> {
-    let file = convert(fs::OpenOptions::new().read(true).open(&path))?;
-    let mut offset: usize = 0;
-    let len = file.metadata().unwrap().len();
-
-    let mut file = io::BufReader::new(file);
-    let name = path.file_name().unwrap().to_str().unwrap().to_string();
-    let mut pre_index = name[5..name.len() - 4].parse::<u64>().unwrap() - 1;
-
-    loop {
-        if len as usize == offset {
-            return Ok(pre_index);
-        }
-
-        let dl = read_u32(&mut file)? as u64;
-        offset += 4;
-        if dl < 4 {
-            return Err(RaftError::Error(format!("lenth is err:{}", dl)));
-        }
-        let mut buf = vec![0; dl as usize];
-        convert(file.read_exact(&mut buf))?;
-        offset += buf.len();
-
-        let e = Entry::decode(&buf)?;
-        pre_index += 1;
-        if check {
-            let (_, index) = e.info();
-            if check && pre_index != index {
-                return Err(RaftError::Error(format!(
-                    "id is not continuous pre:{} now:{}",
-                    pre_index, index
-                )));
-            }
-        } else {
-            println!("{:?}", e);
-        }
-    }
 }
 
 #[test]

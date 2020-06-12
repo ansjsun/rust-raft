@@ -171,7 +171,7 @@ impl Raft {
         let e = {
             if let Err(e) = self
                 .sender
-                .send_log(self.store.log_mem.read().await.get(index).encode())
+                .send_log(self.store.log_mem.read().await.get_uncheck(index).encode())
                 .await
             {
                 Some(e)
@@ -364,7 +364,7 @@ impl Raft {
             return Err(RaftError::IndexLess(self.store.last_index().await, index));
         }
 
-        if let Entry::Commit { term: t, .. } = self.store.log_mem.read().await.get(index) {
+        if let Entry::Commit { term: t, .. } = self.store.log_mem.read().await.get_uncheck(index) {
             if *t == term {
                 self.applied.store(index, SeqCst);
                 self.notify().await;
