@@ -167,7 +167,9 @@ impl Raft {
         if !self.is_leader().await {
             return Err(RaftError::NotLeader(self.leader.load(SeqCst)));
         }
+
         let index = self.store.commit(entry).await?;
+
         let e = {
             if let Err(e) = self
                 .sender
@@ -179,6 +181,7 @@ impl Raft {
                 None
             }
         };
+
         if let Some(e) = e {
             self.store.rollback().await;
             return Err(e);
@@ -457,9 +460,7 @@ impl Raft {
             // found myself voting in this term
             return Err(RaftError::VoteNotAllow);
         }
-
         self.last_heart.store(current_millis(), SeqCst);
-
         let index = self.store.last_index().await;
         self.sender
             .send_log(

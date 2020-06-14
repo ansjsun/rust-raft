@@ -27,6 +27,10 @@ async fn main() {
         .await
         .unwrap();
 
+    println!("raft1 index:{:?}", raft1.info().await);
+    println!("raft2 index:{:?}", raft2.info().await);
+    println!("raft3 index:{:?}", raft3.info().await);
+
     info!("begin validate log file");
     raft1.store.validate_log_file(1).await.unwrap();
     raft2.store.validate_log_file(1).await.unwrap();

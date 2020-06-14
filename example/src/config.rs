@@ -44,17 +44,17 @@ impl StateMachine for MySM {
 
 pub fn make_resolver() -> DefResolver {
     let mut def = DefResolver::new();
-    def.add_node(1, String::from("127.0.0.1"), 10000, 10001);
-    def.add_node(2, String::from("127.0.0.1"), 20000, 20001);
-    def.add_node(3, String::from("127.0.0.1"), 30000, 30001);
+    def.add_node(1, String::from("127.0.0.1"), 10002, 10003);
+    def.add_node(2, String::from("127.0.0.1"), 10004, 10005);
+    def.add_node(3, String::from("127.0.0.1"), 10006, 10007);
     def
 }
 
 pub fn make_config(id: u16) -> Config {
     Config {
         node_id: id as u64,
-        heartbeat_port: id * 10000,
-        replicate_port: id * 10000 + 1,
+        heartbeat_port: 10000 + id * 2,
+        replicate_port: 10000 + id * 2 + 1,
         heartbeate_ms: 300,
         log_path: format!("data/raft{}", id),
         log_max_num: 20000,

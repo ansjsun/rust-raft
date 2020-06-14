@@ -32,12 +32,10 @@ impl Server {
         task::spawn(async move {
             s._start_heartbeat(s.conf.heartbeat_port).await;
         });
-
         let s = self.clone();
         task::spawn(async move {
             s._start_log(s.conf.replicate_port).await;
         });
-
         self
     }
 

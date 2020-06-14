@@ -115,7 +115,7 @@ impl Peer {
             match self.log_pool.get().await {
                 Ok(c) => break Ok(c),
                 Err(e) => {
-                    warn!("conn has err:{}", e);
+                    warn!("conn to:{} has err:{}", self.node_id, e);
                     times -= 1;
                     if times <= 0 {
                         return Err(RaftError::Error(e.to_string()));
@@ -282,13 +282,18 @@ impl Sender {
                         };
 
                         match &e {
-                            RaftError::IndexLess(i, _) => {
-                                if *peer.status.read().await == PeerStatus::Synchronizing {
-                                    let index = *i;
-                                    let peer = peer.clone();
-                                    task::spawn(async move {
-                                        peer.appending(index).await;
-                                    });
+                            RaftError::IndexLess(i, t) => {
+                                if i > t {
+                                    tx.send(e).await;
+                                    return;
+                                } else {
+                                    if *peer.status.read().await == PeerStatus::Synchronizing {
+                                        let index = *i;
+                                        let peer = peer.clone();
+                                        task::spawn(async move {
+                                            peer.appending(index).await;
+                                        });
+                                    }
                                 }
                             }
                             _ => {}
