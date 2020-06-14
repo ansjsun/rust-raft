@@ -1,8 +1,12 @@
 [package]
 name = "raft4rs"
+description = "Rust impl for raft"
 version = "0.1.0"
 authors = ["Ansj <ansj-sun@163.com>"]
 edition = "2018"
+license = "Apache-2.0"
+keywords = ["raft", "rust", "raft4rs"]
+homepage = "https://github.com/ansjsun/rust-raft"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
