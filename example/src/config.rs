@@ -1,11 +1,9 @@
-use async_trait::async_trait;
 use raft4rs::{entity::Config, error::*, state_machine::*};
 
 pub struct MySM {
     pub id: usize,
 }
 
-#[async_trait]
 impl StateMachine for MySM {
     fn apply_log(&self, term: u64, index: u64, command: &[u8]) -> RaftResult<()> {
         if index % 10000 == 0 {
@@ -33,7 +31,7 @@ impl StateMachine for MySM {
         );
         Ok(())
     }
-    async fn apply_leader_change(&self, term: u64, index: u64, leader: u64) -> RaftResult<()> {
+    fn apply_leader_change(&self, term: u64, index: u64, leader: u64) -> RaftResult<()> {
         println!(
             "apply_leader_change {} leader:{} term:{} index:{}",
             self.id, leader, term, index

@@ -213,7 +213,7 @@ impl Raft {
                 }
                 self.leader.store(leader, SeqCst);
                 self.term.store(term, SeqCst);
-                self.sm.apply_leader_change(term, *index, leader).await
+                self.sm.apply_leader_change(term, *index, leader)
             }
             Entry::MemberChange {
                 term,

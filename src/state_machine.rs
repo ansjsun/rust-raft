@@ -1,12 +1,10 @@
 use crate::error::*;
-use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 pub type RSL = Arc<Box<dyn Resolver + Sync + Send + 'static>>;
 pub type SM = Arc<Box<dyn StateMachine + Sync + Send + 'static>>;
 
-#[async_trait]
 pub trait StateMachine {
     fn apply_log(&self, term: u64, index: u64, command: &[u8]) -> RaftResult<()>;
     fn apply_member_change(
@@ -17,7 +15,7 @@ pub trait StateMachine {
         action: u8,
         exists: bool,
     ) -> RaftResult<()>;
-    async fn apply_leader_change(&self, term: u64, index: u64, leader: u64) -> RaftResult<()>;
+    fn apply_leader_change(&self, term: u64, index: u64, leader: u64) -> RaftResult<()>;
 }
 
 pub trait Resolver {
