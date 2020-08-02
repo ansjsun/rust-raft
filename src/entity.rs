@@ -17,6 +17,7 @@ pub mod entry_type {
     pub const VOTE: u8 = 2;
     pub const LEADER_CHANGE: u8 = 3;
     pub const MEMBER_CHANGE: u8 = 4;
+    pub const FORWARD_COMMIT: u8 = 5;
 }
 
 pub mod action_type {
@@ -283,6 +284,8 @@ pub struct Config {
     pub log_file_size_mb: u64,
     //Three  without a heartbeat , follower to begin consecutive elections
     pub heartbeate_ms: u64,
+    //forward to leader
+    pub forward_leader: bool,
 }
 
 #[derive(Debug, Clone)]

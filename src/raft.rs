@@ -127,6 +127,13 @@ impl Raft {
 
     //this function only call by leader
     pub async fn submit(self: &Arc<Raft>, cmd: Vec<u8>) -> RaftResult<()> {
+        if self.conf.forward_leader {
+            let leader = self.leader.load(SeqCst);
+            if !self.node_id != leader {
+                return self.sender.forward_commit(cmd, leader).await;
+            }
+        }
+
         self.commit(Entry::Commit {
             pre_term: self.store.last_term().await,
             term: self.term.load(SeqCst),
