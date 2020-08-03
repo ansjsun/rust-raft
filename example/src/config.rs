@@ -38,6 +38,10 @@ impl StateMachine for MySM {
         );
         Ok(())
     }
+    fn execute(&self, command: &[u8]) -> RaftResult<Vec<u8>> {
+        let v = format!("use execute:{:?} by :{}", command, self.id);
+        Ok(v.as_bytes().to_vec())
+    }
 }
 
 pub fn make_resolver() -> DefResolver {

@@ -4,6 +4,8 @@ pub static SUCCESS: &[u8] = &[0, 0, 0, 1, 0];
 pub enum RaftError {
     #[error("success")]
     Success,
+    #[error("success raw")]
+    SuccessRaw(Vec<u8>),
     #[error("{0}")]
     Error(String),
     #[error("net has error: {0}")]
@@ -48,25 +50,26 @@ impl RaftError {
     fn id(&self) -> u8 {
         match self {
             RaftError::Success => 0,
-            RaftError::Error(_) => 1,
-            RaftError::NetError(_) => 2,
-            RaftError::IOError(_) => 3,
-            RaftError::NotfoundAddr(_) => 4,
-            RaftError::TermLess => 5,
-            RaftError::TermGreater => 6,
-            RaftError::IndexLess(_, _) => 7,
-            RaftError::VoteNotAllow => 8,
-            RaftError::TypeErr => 9,
-            RaftError::RaftNotFound(_) => 10,
-            RaftError::NotLeader(_) => 11,
-            RaftError::LogFileNotFound(_) => 12,
-            RaftError::LogFileInvalid(_) => 13,
-            RaftError::Timeout(_) => 14,
-            RaftError::IncompleteErr(_) => 15,
-            RaftError::NotReady => 16,
-            RaftError::NotEnoughRecipient(_, _) => 17,
-            RaftError::ErrCode(_, _) => 18,
-            RaftError::OutMemIndex(_) => 19,
+            RaftError::SuccessRaw(_) => 1,
+            RaftError::Error(_) => 2,
+            RaftError::NetError(_) => 3,
+            RaftError::IOError(_) => 4,
+            RaftError::NotfoundAddr(_) => 5,
+            RaftError::TermLess => 6,
+            RaftError::TermGreater => 7,
+            RaftError::IndexLess(_, _) => 8,
+            RaftError::VoteNotAllow => 9,
+            RaftError::TypeErr => 10,
+            RaftError::RaftNotFound(_) => 11,
+            RaftError::NotLeader(_) => 12,
+            RaftError::LogFileNotFound(_) => 13,
+            RaftError::LogFileInvalid(_) => 14,
+            RaftError::Timeout(_) => 15,
+            RaftError::IncompleteErr(_) => 16,
+            RaftError::NotReady => 17,
+            RaftError::NotEnoughRecipient(_, _) => 18,
+            RaftError::ErrCode(_, _) => 19,
+            RaftError::OutMemIndex(_) => 20,
         }
     }
 }
@@ -97,6 +100,11 @@ impl RaftError {
                 result = Vec::with_capacity(1 + msg.len());
                 result.push(self.id());
                 result.extend_from_slice(msg.as_str().as_bytes());
+            }
+            RaftError::SuccessRaw(raw) => {
+                result = Vec::with_capacity(1 + raw.len());
+                result.push(self.id());
+                result.extend_from_slice(raw);
             }
             RaftError::NotfoundAddr(num)
             | RaftError::RaftNotFound(num)
@@ -139,25 +147,26 @@ impl RaftError {
         }
         match data[0] {
             0 => RaftError::Success,
-            1 => RaftError::Error(read_string(data, 1)),
-            2 => RaftError::NetError(read_string(data, 1)),
-            3 => RaftError::IOError(read_string(data, 1)),
-            4 => RaftError::NotfoundAddr(read_u64_slice(data, 1)),
-            5 => RaftError::TermLess,
-            6 => RaftError::TermGreater,
-            7 => RaftError::IndexLess(read_u64_slice(data, 1), read_u64_slice(data, 9)),
-            8 => RaftError::VoteNotAllow,
-            9 => RaftError::TypeErr,
-            10 => RaftError::RaftNotFound(read_u64_slice(data, 1)),
-            11 => RaftError::NotLeader(read_u64_slice(data, 1)),
-            12 => RaftError::LogFileNotFound(read_u64_slice(data, 1)),
-            13 => RaftError::LogFileInvalid(read_u64_slice(data, 1)),
-            14 => RaftError::Timeout(read_u64_slice(data, 1)),
-            15 => RaftError::IncompleteErr(read_u64_slice(data, 1)),
-            16 => RaftError::NotReady,
-            17 => RaftError::NotEnoughRecipient(read_u16_slice(data, 1), read_u16_slice(data, 3)),
-            18 => RaftError::ErrCode(read_i32_slice(data, 1), read_string(data, 5)),
-            19 => RaftError::OutMemIndex(read_u64_slice(data, 1)),
+            1 => RaftError::SuccessRaw(data[1..].to_vec()),
+            2 => RaftError::Error(read_string(data, 1)),
+            3 => RaftError::NetError(read_string(data, 1)),
+            4 => RaftError::IOError(read_string(data, 1)),
+            5 => RaftError::NotfoundAddr(read_u64_slice(data, 1)),
+            6 => RaftError::TermLess,
+            7 => RaftError::TermGreater,
+            8 => RaftError::IndexLess(read_u64_slice(data, 1), read_u64_slice(data, 9)),
+            9 => RaftError::VoteNotAllow,
+            10 => RaftError::TypeErr,
+            11 => RaftError::RaftNotFound(read_u64_slice(data, 1)),
+            12 => RaftError::NotLeader(read_u64_slice(data, 1)),
+            13 => RaftError::LogFileNotFound(read_u64_slice(data, 1)),
+            14 => RaftError::LogFileInvalid(read_u64_slice(data, 1)),
+            15 => RaftError::Timeout(read_u64_slice(data, 1)),
+            16 => RaftError::IncompleteErr(read_u64_slice(data, 1)),
+            17 => RaftError::NotReady,
+            18 => RaftError::NotEnoughRecipient(read_u16_slice(data, 1), read_u16_slice(data, 3)),
+            19 => RaftError::ErrCode(read_i32_slice(data, 1), read_string(data, 5)),
+            20 => RaftError::OutMemIndex(read_u64_slice(data, 1)),
             _ => panic!("not found"),
         }
     }

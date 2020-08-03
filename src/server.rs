@@ -159,7 +159,7 @@ impl RaftServer {
         }
     }
 
-    async fn log(&self, raft_id: u64, entry: Entry) -> RaftResult<()> {
+    async fn log(&self, raft_id: u64, entry: Entry) -> RaftResult<Option<Vec<u8>>> {
         let raft = match self.rafts.read().await.get(&raft_id) {
             Some(v) => v.clone(),
             None => return Err(RaftError::RaftNotFound(raft_id)),
@@ -173,13 +173,25 @@ impl RaftServer {
                 raft.store.commit(entry).await?;
                 raft.applied.store(applied_index, SeqCst);
                 raft.notify().await;
-                Ok(())
+                Ok(None)
             }
             Entry::Vote {
                 leader,
                 term,
                 committed,
-            } => raft.vote(*leader, *term, *committed).await,
+            } => raft.vote(*leader, *term, *committed).await.map(|_v| None),
+            Entry::ForwardSubmit { .. } => match entry {
+                Entry::ForwardSubmit { commond } => {
+                    raft.submit(commond, false).await.map(|_v| None)
+                }
+                _ => panic!("impossibility"),
+            },
+            Entry::ForwardExecute { .. } => match entry {
+                Entry::ForwardExecute { commond } => {
+                    raft.execute(commond, false).await.map(|v| Some(v))
+                }
+                _ => panic!("impossibility"),
+            },
             _ => {
                 error!("err log type {:?}", entry);
                 Err(RaftError::TypeErr)
@@ -235,7 +247,8 @@ async fn log(rs: Arc<RaftServer>, mut stream: TcpStream) {
             Ok((raft_id, entry)) => rs.log(raft_id, entry).await,
             Err(e) => Err(e),
         } {
-            Ok(()) => stream.write(SUCCESS).await,
+            Ok(None) => stream.write(SUCCESS).await,
+            Ok(Some(v)) => stream.write(&v).await,
             Err(e) => {
                 let result = e.encode();
                 if let Err(e) = stream.write(&u32::to_be_bytes(result.len() as u32)).await {

@@ -35,9 +35,20 @@ async fn main() {
         std::thread::sleep(std::time::Duration::from_secs(1));
         info!("wait raft1 to leader times");
     }
+
+    let result = raft1.execute(vec![1, 2, 3], true).await.unwrap();
+    println!("execute raf1:{}", String::from_utf8(result).unwrap());
+    let result = raft2.execute(vec![2, 2, 3], true).await.unwrap();
+    println!("execute raf2:{}", String::from_utf8(result).unwrap());
+    let result = raft3.execute(vec![3, 2, 3], true).await.unwrap();
+    println!("execute raf3:{}", String::from_utf8(result).unwrap());
+
     for i in 0..10000000u32 {
-        if let Err(e) = raft1
-            .submit(unsafe { format!("commit: {}", i + 1).as_mut_vec().clone() })
+        if let Err(e) = raft2
+            .submit(
+                unsafe { format!("commit: {}", i + 1).as_mut_vec().clone() },
+                true,
+            )
             .await
         {
             println!("{:?}", e);

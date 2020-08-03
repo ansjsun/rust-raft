@@ -17,7 +17,8 @@ pub mod entry_type {
     pub const VOTE: u8 = 2;
     pub const LEADER_CHANGE: u8 = 3;
     pub const MEMBER_CHANGE: u8 = 4;
-    pub const FORWARD_COMMIT: u8 = 5;
+    pub const FORWARD_SUBMIT: u8 = 5;
+    pub const FORWARD_EXECUTE: u8 = 6;
 }
 
 pub mod action_type {
@@ -56,6 +57,12 @@ pub enum Entry {
         leader: u64,
         term: u64,
         committed: u64,
+    },
+    ForwardSubmit {
+        commond: Vec<u8>,
+    },
+    ForwardExecute {
+        commond: Vec<u8>,
     },
 }
 
@@ -140,6 +147,12 @@ impl Decode for Entry {
                     action: buf[33],
                 }
             }
+            entry_type::FORWARD_SUBMIT => Entry::ForwardSubmit {
+                commond: buf[1..].to_vec(),
+            },
+            entry_type::FORWARD_EXECUTE => Entry::ForwardExecute {
+                commond: buf[1..].to_vec(),
+            },
             _ => return Err(RaftError::TypeErr),
         };
         Ok(entry)
@@ -215,6 +228,16 @@ impl Encode for Entry {
                 vec.extend_from_slice(&u64::to_be_bytes(*node_id));
                 vec.push(*action);
             }
+            Entry::ForwardSubmit { commond } => {
+                vec = Vec::with_capacity(commond.len() + 1);
+                vec.push(entry_type::FORWARD_SUBMIT);
+                vec.extend_from_slice(commond);
+            }
+            Entry::ForwardExecute { commond } => {
+                vec = Vec::with_capacity(commond.len() + 1);
+                vec.push(entry_type::FORWARD_EXECUTE);
+                vec.extend_from_slice(commond);
+            }
         }
         vec
     }
@@ -232,6 +255,9 @@ impl Entry {
             } => (*term, *committed),
             Entry::LeaderChange { term, index, .. } => (*term, *index),
             Entry::MemberChange { term, index, .. } => (*term, *index),
+            Entry::ForwardSubmit { .. } | Entry::ForwardExecute { .. } => {
+                panic!("forward can not use info")
+            }
         }
     }
 
@@ -257,7 +283,12 @@ impl Entry {
                 index,
                 ..
             } => (*pre_term, *term, *index),
-            _ => panic!(format!("not support commit_info by this type:{:?}", self)),
+            Entry::ForwardExecute { .. }
+            | Entry::ForwardSubmit { .. }
+            | Entry::Heartbeat { .. }
+            | Entry::Vote { .. } => {
+                panic!(format!("not support commit_info by this type:{:?}", self))
+            }
         }
     }
 
@@ -284,8 +315,6 @@ pub struct Config {
     pub log_file_size_mb: u64,
     //Three  without a heartbeat , follower to begin consecutive elections
     pub heartbeate_ms: u64,
-    //forward to leader
-    pub forward_leader: bool,
 }
 
 #[derive(Debug, Clone)]

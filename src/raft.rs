@@ -125,12 +125,34 @@ impl Raft {
         self.notify.1.recv().await.unwrap();
     }
 
-    //this function only call by leader
-    pub async fn submit(self: &Arc<Raft>, cmd: Vec<u8>) -> RaftResult<()> {
-        if self.conf.forward_leader {
+    //this method callbak execute method , if forward_leader is true , it will forward
+    pub async fn execute(
+        self: &Arc<Raft>,
+        cmd: Vec<u8>,
+        forward_leader: bool,
+    ) -> RaftResult<Vec<u8>> {
+        if forward_leader {
             let leader = self.leader.load(SeqCst);
-            if !self.node_id != leader {
-                return self.sender.forward_commit(cmd, leader).await;
+            if self.node_id != leader {
+                return self
+                    .sender
+                    .forward(Entry::ForwardExecute { commond: cmd }.encode(), leader)
+                    .await;
+            }
+        }
+        self.sm.execute(&cmd)
+    }
+
+    //call this .to submit log , cmd is data ,
+    // forward is leader, if true , you can submit data by replica , if false you must call it by leader
+    pub async fn submit(self: &Arc<Raft>, cmd: Vec<u8>, forward_leader: bool) -> RaftResult<()> {
+        if forward_leader {
+            let leader = self.leader.load(SeqCst);
+            if self.node_id != leader {
+                self.sender
+                    .forward(Entry::ForwardSubmit { commond: cmd }.encode(), leader)
+                    .await?;
+                return Ok(());
             }
         }
 

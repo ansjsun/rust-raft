@@ -261,7 +261,7 @@ impl Sender {
         }
     }
 
-    pub async fn forward_commit(&self, mut body: Vec<u8>, leader: u64) -> RaftResult<()> {
+    pub async fn forward(&self, body: Vec<u8>, leader: u64) -> RaftResult<Vec<u8>> {
         let mut peer: Option<Arc<Peer>> = None;
         for p in &*self.peers.read().await {
             if p.node_id == leader {
@@ -273,14 +273,16 @@ impl Sender {
             return Err(RaftError::NotfoundAddr(leader));
         }
 
-        body[0] = entry_type::FORWARD_COMMIT;
-
         let e = peer.unwrap().send(Arc::new(body)).await?;
-        if e != RaftError::Success {
-            return Err(e);
-        }
 
-        Ok(())
+        match &e {
+            RaftError::Success => Ok(Vec::new()),
+            RaftError::SuccessRaw(_) => match e {
+                RaftError::SuccessRaw(d) => Ok(d),
+                _ => panic!("impossibility"),
+            },
+            _ => Err(e),
+        }
     }
 
     pub async fn send_log(&self, body: Vec<u8>) -> RaftResult<()> {
