@@ -27,10 +27,9 @@ async fn main() {
         .create_raft(1, 0, 1, replicas, MySM { id: 3 })
         .await
         .unwrap();
-
     while !raft1.is_leader().await {
         if let Err(e) = raft1.try_to_leader().await {
-            println!("raft1 try to leader has err:{:?}", e);
+            info!("raft1 try to leader has err:{:?}", e);
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
         info!("wait raft1 to leader times");
@@ -38,8 +37,20 @@ async fn main() {
 
     let result = raft1.execute(vec![1, 2, 3], true).await.unwrap();
     println!("execute raf1:{}", String::from_utf8(result).unwrap());
+
+    while raft2.leader() == 0 {
+        info!("wait raft2 has leader");
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
     let result = raft2.execute(vec![2, 2, 3], true).await.unwrap();
     println!("execute raf2:{}", String::from_utf8(result).unwrap());
+
+    while raft3.leader() == 0 {
+        info!("wait raft3 has leader");
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
     let result = raft3.execute(vec![3, 2, 3], true).await.unwrap();
     println!("execute raf3:{}", String::from_utf8(result).unwrap());
 
