@@ -30,6 +30,7 @@ impl Connection {
     async fn read_result(&mut self) -> std::io::Result<RaftError> {
         self.stream.read_exact(&mut self.len).await?;
         let len = u32::from_be_bytes(self.len) as usize;
+
         if len > 256 {
             let mut buf: Vec<u8> = Vec::with_capacity(len);
             buf.resize_with(len as usize, Default::default);
@@ -201,6 +202,7 @@ impl Peer {
                     }
                     Ok(v) => match v {
                         Some(body) => {
+                            println!("sync ----log");
                             if let Err(e) = conn.write_body(&self.raft_id, &body).await {
                                 error!("appending write has err:{}", e);
                                 break;
@@ -253,11 +255,9 @@ impl Sender {
         for p in &*peers {
             let body = body.clone();
             let peer = p.clone();
-            task::spawn(async move {
-                if let Err(e) = peer.send(body).await {
-                    error!("send heartbeat has err:{}", e);
-                }
-            });
+            if let Err(e) = peer.send(body).await {
+                error!("send heartbeat has err:{}", e);
+            }
         }
     }
 

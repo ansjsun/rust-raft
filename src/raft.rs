@@ -125,24 +125,6 @@ impl Raft {
         self.notify.1.recv().await.unwrap();
     }
 
-    //this method callbak execute method , if forward_leader is true , it will forward
-    pub async fn execute(
-        self: &Arc<Raft>,
-        cmd: Vec<u8>,
-        forward_leader: bool,
-    ) -> RaftResult<Vec<u8>> {
-        if forward_leader {
-            let leader = self.leader.load(SeqCst);
-            if self.node_id != leader {
-                return self
-                    .sender
-                    .forward(Entry::ForwardExecute { commond: cmd }.encode(), leader)
-                    .await;
-            }
-        }
-        self.sm.execute(&cmd)
-    }
-
     //call this .to submit log , cmd is data ,
     // forward is leader, if true , you can submit data by replica , if false you must call it by leader
     pub async fn submit(self: &Arc<Raft>, cmd: Vec<u8>, forward_leader: bool) -> RaftResult<()> {
@@ -372,6 +354,10 @@ impl Raft {
         }
     }
 
+    pub fn leader(&self) -> u64 {
+        return self.leader.load(SeqCst);
+    }
+
     pub async fn is_candidate(&self) -> bool {
         match *self.state.read().await {
             RaftState::Candidate => true,
@@ -550,7 +536,6 @@ impl Raft {
                         committed,
                         applied,
                     };
-
                     raft.sender.send_heartbeat(ie.encode()).await;
                 } else if raft.is_follower().await {
                     if current_millis() - raft.last_heart.load(SeqCst) > raft.conf.heartbeate_ms * 3
@@ -569,7 +554,7 @@ impl Raft {
                             || current_millis() - raft.last_heart.load(SeqCst)
                                 < raft.conf.heartbeate_ms * 3
                         {
-                            break;
+                            continue;
                         }
 
                         raft.leader.store(0, SeqCst);
@@ -585,7 +570,7 @@ impl Raft {
                         }
                     }
                 }
-                task::sleep(Duration::from_millis(raft.conf.heartbeate_ms)).await;
+                std::thread::sleep(Duration::from_millis(raft.conf.heartbeate_ms));
             }
         });
     }

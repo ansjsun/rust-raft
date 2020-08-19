@@ -186,12 +186,6 @@ impl RaftServer {
                 }
                 _ => panic!("impossibility"),
             },
-            Entry::ForwardExecute { .. } => match entry {
-                Entry::ForwardExecute { commond } => {
-                    raft.execute(commond, false).await.map(|v| Some(v))
-                }
-                _ => panic!("impossibility"),
-            },
             _ => {
                 error!("err log type {:?}", entry);
                 Err(RaftError::TypeErr)
