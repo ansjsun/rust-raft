@@ -6,7 +6,7 @@ pub struct MySM {
 
 impl StateMachine for MySM {
     fn apply_log(&self, term: u64, index: u64, command: &[u8]) -> RaftResult<()> {
-        if index % 10000 == 0 {
+        if index % 1000 == 0 {
             println!(
                 "apply {} term:{} index:{} command:{:?}",
                 self.id,

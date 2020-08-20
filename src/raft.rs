@@ -527,6 +527,7 @@ impl Raft {
         let raft = self.clone();
         //this job for heartbeat . leader to send , follwer to check heartbeat time
         task::spawn(async move {
+            let mut leader_err_time = 0;
             while !raft.stopd.load(SeqCst) {
                 if raft.is_leader().await {
                     let (_, committed, applied) = raft.store.info().await;
@@ -536,7 +537,14 @@ impl Raft {
                         committed,
                         applied,
                     };
-                    raft.sender.send_heartbeat(ie.encode()).await;
+                    if let Err(e) = raft.sender.send_heartbeat(ie.encode()).await {
+                        leader_err_time += 1;
+                        if leader_err_time > 5 {
+                            leader_err_time = 0;
+                            raft.to_follower().await;
+                        }
+                        error!("send heartbeat has err:[{:?}]", e);
+                    }
                 } else if raft.is_follower().await {
                     if current_millis() - raft.last_heart.load(SeqCst) > raft.conf.heartbeate_ms * 3
                     {
@@ -544,6 +552,7 @@ impl Raft {
                             "{} too long time receive heartbeat , try to leader",
                             raft.conf.node_id
                         );
+                        leader_err_time = 0;
                         //rand sleep to elect
                         let random = rand::thread_rng().gen_range(150, 300);
                         task::sleep(Duration::from_millis(random)).await;

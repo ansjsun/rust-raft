@@ -202,7 +202,6 @@ impl Peer {
                     }
                     Ok(v) => match v {
                         Some(body) => {
-                            println!("sync ----log");
                             if let Err(e) = conn.write_body(&self.raft_id, &body).await {
                                 error!("appending write has err:{}", e);
                                 break;
@@ -246,21 +245,6 @@ impl Sender {
         }
     }
 
-    pub async fn send_heartbeat(&self, body: Vec<u8>) {
-        let peers = self.peers.read().await;
-        if peers.len() == 0 {
-            return;
-        }
-        let body = Arc::new(body);
-        for p in &*peers {
-            let body = body.clone();
-            let peer = p.clone();
-            if let Err(e) = peer.send(body).await {
-                error!("send heartbeat has err:{}", e);
-            }
-        }
-    }
-
     pub async fn forward(&self, body: Vec<u8>, leader: u64) -> RaftResult<Vec<u8>> {
         let mut peer: Option<Arc<Peer>> = None;
         for p in &*self.peers.read().await {
@@ -283,6 +267,51 @@ impl Sender {
             },
             _ => Err(e),
         }
+    }
+
+    pub async fn send_heartbeat(&self, body: Vec<u8>) -> RaftResult<()> {
+        let peers = self.peers.read().await;
+        if peers.len() == 0 {
+            return Ok(());
+        }
+        let body = Arc::new(body);
+        let (tx, rx) = channel(peers.len());
+        for p in &*peers {
+            let body = body.clone();
+            let peer = p.clone();
+            let tx = tx.clone();
+            task::spawn(async move {
+                match peer.send(body).await {
+                    Ok(e) | Err(e) => tx.send(e).await,
+                }
+            });
+        }
+
+        let half = peers.len() / 2 + peers.len() % 2;
+
+        let mut ok = 0;
+        let mut err = 0;
+
+        drop(tx);
+
+        while let Ok(e) = rx.recv().await {
+            if e == RaftError::Success {
+                ok += 1;
+                if ok > half {
+                    return Ok(());
+                }
+            } else {
+                err += 1;
+                if err > half {
+                    return Err(e);
+                }
+            }
+        }
+
+        return Err(RaftError::NotEnoughRecipient(
+            half as u16,
+            (peers.len() - err - ok) as u16,
+        ));
     }
 
     pub async fn send_log(&self, body: Vec<u8>) -> RaftResult<()> {
@@ -358,7 +387,10 @@ impl Sender {
             }
         }
 
-        Ok(())
+        return Err(RaftError::NotEnoughRecipient(
+            half as u16,
+            (err + ok) as u16,
+        ));
     }
 
     pub async fn add_peer(&self, node_id: u64, raft: Arc<Raft>) {

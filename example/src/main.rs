@@ -35,7 +35,7 @@ async fn main() {
         info!("wait raft1 to leader times");
     }
 
-    for i in 0..100u32 {
+    for i in 0..1000000u32 {
         let v = i % 3;
         let raft = match v {
             0 => raft1.clone(),
