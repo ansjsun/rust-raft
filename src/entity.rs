@@ -18,6 +18,7 @@ pub mod entry_type {
     pub const LEADER_CHANGE: u8 = 3;
     pub const MEMBER_CHANGE: u8 = 4;
     pub const FORWARD_SUBMIT: u8 = 5;
+    pub const FORWARD_EXECUTE: u8 = 6;
 }
 
 pub mod action_type {
@@ -58,6 +59,9 @@ pub enum Entry {
         committed: u64,
     },
     ForwardSubmit {
+        commond: Vec<u8>,
+    },
+    ForwardExecute {
         commond: Vec<u8>,
     },
 }
@@ -146,6 +150,9 @@ impl Decode for Entry {
             entry_type::FORWARD_SUBMIT => Entry::ForwardSubmit {
                 commond: buf[1..].to_vec(),
             },
+            entry_type::FORWARD_EXECUTE => Entry::ForwardExecute {
+                commond: buf[1..].to_vec(),
+            },
             _ => return Err(RaftError::TypeErr),
         };
         Ok(entry)
@@ -226,6 +233,11 @@ impl Encode for Entry {
                 vec.push(entry_type::FORWARD_SUBMIT);
                 vec.extend_from_slice(commond);
             }
+            Entry::ForwardExecute { commond } => {
+                vec = Vec::with_capacity(commond.len() + 1);
+                vec.push(entry_type::FORWARD_EXECUTE);
+                vec.extend_from_slice(commond);
+            }
         }
         vec
     }
@@ -243,7 +255,9 @@ impl Entry {
             } => (*term, *committed),
             Entry::LeaderChange { term, index, .. } => (*term, *index),
             Entry::MemberChange { term, index, .. } => (*term, *index),
-            Entry::ForwardSubmit { .. } => panic!("forward can not use info"),
+            Entry::ForwardSubmit { .. } | Entry::ForwardExecute { .. } => {
+                panic!("forward can not use info")
+            }
         }
     }
 
@@ -269,7 +283,10 @@ impl Entry {
                 index,
                 ..
             } => (*pre_term, *term, *index),
-            Entry::ForwardSubmit { .. } | Entry::Heartbeat { .. } | Entry::Vote { .. } => {
+            Entry::ForwardExecute { .. }
+            | Entry::ForwardSubmit { .. }
+            | Entry::Heartbeat { .. }
+            | Entry::Vote { .. } => {
                 panic!(format!("not support commit_info by this type:{:?}", self))
             }
         }

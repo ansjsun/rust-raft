@@ -175,14 +175,15 @@ impl RaftServer {
                 raft.notify().await;
                 Ok(None)
             }
-            Entry::Vote {
-                leader,
-                term,
-                committed,
-            } => raft.vote(*leader, *term, *committed).await.map(|_v| None),
             Entry::ForwardSubmit { .. } => match entry {
                 Entry::ForwardSubmit { commond } => {
                     raft.submit(commond, false).await.map(|_v| None)
+                }
+                _ => panic!("impossibility"),
+            },
+            Entry::ForwardExecute { .. } => match entry {
+                Entry::ForwardExecute { commond } => {
+                    raft.execute(commond, false).await.map(|v| Some(v))
                 }
                 _ => panic!("impossibility"),
             },
@@ -199,6 +200,10 @@ impl RaftServer {
             None => return Err(RaftError::RaftNotFound(raft_id)),
         };
 
+        if crate::current_millis() % 10 == 0 {
+            println!("recive heartbeat:{:?} entry:{:?}", raft.info().await, entry);
+        }
+
         match entry {
             Entry::Heartbeat {
                 term,
@@ -206,6 +211,11 @@ impl RaftServer {
                 committed,
                 applied,
             } => raft.heartbeat(term, leader, committed, applied).await,
+            Entry::Vote {
+                leader,
+                term,
+                committed,
+            } => raft.vote(leader, term, committed).await,
             _ => {
                 error!("err heartbeat type {:?}", entry);
                 Err(RaftError::TypeErr)

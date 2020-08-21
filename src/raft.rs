@@ -17,10 +17,20 @@ use std::time::Duration;
 
 impl Vote {
     fn update(&mut self, leader: u64, term: u64, end_time: u64) -> bool {
-        if self.end_time > current_millis()
-            && self.leader != 0
-            && (self.leader != leader || self.term != term)
-        {
+        if self.end_time > current_millis() {
+            println!(
+                "tttttttttttt{}---{}------------{}",
+                self.end_time,
+                current_millis(),
+                self.end_time - current_millis()
+            );
+            return false;
+        }
+        if self.leader != leader && self.term > term {
+            println!(
+                "{}--------------{}--------------{}-----------------{}",
+                self.leader, leader, self.term, term
+            );
             return false;
         }
         self.leader = leader;
@@ -125,6 +135,24 @@ impl Raft {
         self.notify.1.recv().await.unwrap();
     }
 
+    //this method callbak execute method , if forward_leader is true , it will forward
+    pub async fn execute(
+        self: &Arc<Raft>,
+        cmd: Vec<u8>,
+        forward_leader: bool,
+    ) -> RaftResult<Vec<u8>> {
+        if forward_leader {
+            let leader = self.leader.load(SeqCst);
+            if self.node_id != leader {
+                return self
+                    .sender
+                    .forward(Entry::ForwardExecute { commond: cmd }.encode(), leader)
+                    .await;
+            }
+        }
+        self.sm.execute(&cmd)
+    }
+
     //call this .to submit log , cmd is data ,
     // forward is leader, if true , you can submit data by replica , if false you must call it by leader
     pub async fn submit(self: &Arc<Raft>, cmd: Vec<u8>, forward_leader: bool) -> RaftResult<()> {
@@ -184,7 +212,7 @@ impl Raft {
         let e = {
             if let Err(e) = self
                 .sender
-                .send_log(self.store.log_mem.read().await.get_uncheck(index).encode())
+                .send(self.store.log_mem.read().await.get_uncheck(index).encode())
                 .await
             {
                 Some(e)
@@ -278,8 +306,8 @@ impl Raft {
         let self_term = self.term.load(SeqCst);
         if self_term > term {
             return Err(RaftError::TermLess);
-        } else if self_term < term {
-            self.term.store(term, SeqCst);
+        } else if self.is_leader().await {
+            self.to_follower().await;
         }
         self.last_heart.store(current_millis(), SeqCst);
 
@@ -291,19 +319,22 @@ impl Raft {
             self.notify().await;
         }
 
-        if self.leader.load(SeqCst) != leader {
+        if self.term.load(SeqCst) != term {
             self.leader.store(leader, SeqCst);
+            self.term.store(term, SeqCst);
         }
 
         return Ok(());
     }
 
     pub async fn vote(&self, leader: u64, term: u64, committed: u64) -> RaftResult<()> {
-        if self.term.load(SeqCst) > term {
+        let self_term = self.term.load(SeqCst);
+        if self_term > term {
+            println!("term:{} ---------------------------   {}", self_term, term);
             return Err(RaftError::TermLess);
         }
 
-        if self.store.last_index().await > committed {
+        if self_term == term && self.store.last_index().await > committed {
             return Err(RaftError::IndexLess(
                 self.store.last_index().await,
                 committed,
@@ -311,9 +342,12 @@ impl Raft {
         }
         self.last_heart.store(current_millis(), SeqCst);
 
-        let mut vote = self.voted.lock().await;
-
-        if vote.update(leader, term, current_millis() + self.conf.heartbeate_ms) {
+        if self
+            .voted
+            .lock()
+            .await
+            .update(leader, term, current_millis() + self.conf.heartbeate_ms)
+        {
             Ok(())
         } else {
             Err(RaftError::VoteNotAllow)
@@ -466,7 +500,7 @@ impl Raft {
 
         if self.voted.lock().await.update(
             self.conf.node_id,
-            self.term.load(SeqCst),
+            term,
             current_millis() + self.conf.heartbeate_ms,
         ) {
             let mut state = self.state.write().await;
@@ -478,7 +512,7 @@ impl Raft {
         self.last_heart.store(current_millis(), SeqCst);
         let index = self.store.last_index().await;
         self.sender
-            .send_log(
+            .send(
                 Entry::Vote {
                     term: term,
                     leader: self.conf.node_id,
@@ -537,7 +571,8 @@ impl Raft {
                         committed,
                         applied,
                     };
-                    if let Err(e) = raft.sender.send_heartbeat(ie.encode()).await {
+                    if let Err(e) = raft.sender.send(ie.encode()).await {
+                        println!("================================={}", leader_err_time);
                         leader_err_time += 1;
                         if leader_err_time > 5 {
                             leader_err_time = 0;
@@ -554,10 +589,11 @@ impl Raft {
                         );
                         leader_err_time = 0;
                         //rand sleep to elect
-                        let random = rand::thread_rng().gen_range(150, 300);
+                        let random = rand::thread_rng()
+                            .gen_range(raft.conf.heartbeate_ms, raft.conf.heartbeate_ms * 3);
                         task::sleep(Duration::from_millis(random)).await;
 
-                        let term = raft.term.load(SeqCst);
+                        let term = raft.term.load(SeqCst) + 1;
 
                         if !raft.is_follower().await
                             || current_millis() - raft.last_heart.load(SeqCst)
@@ -565,8 +601,6 @@ impl Raft {
                         {
                             continue;
                         }
-
-                        raft.leader.store(0, SeqCst);
 
                         if let Err(e) = raft.to_voter(term).await {
                             error!("send vote has err:{:?}", e);

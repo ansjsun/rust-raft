@@ -8,6 +8,8 @@ pub type SM = Arc<Box<dyn StateMachine + Sync + Send + 'static>>;
 pub trait StateMachine {
     /// this is a call execute method for leader, and no change log,
     /// example search method only run leader, now you can call it in replica , it forward to leader and return result .
+    fn execute(&self, command: &[u8]) -> RaftResult<Vec<u8>>;
+
     fn apply_log(&self, term: u64, index: u64, command: &[u8]) -> RaftResult<()>;
     fn apply_member_change(
         &self,

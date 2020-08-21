@@ -35,6 +35,25 @@ async fn main() {
         info!("wait raft1 to leader times");
     }
 
+    // let result = raft1.execute(vec![1, 2, 3], true).await.unwrap();
+    // println!("execute raf1:{}", String::from_utf8(result).unwrap());
+
+    // while raft2.leader() == 0 {
+    //     info!("wait raft2 has leader");
+    //     std::thread::sleep(std::time::Duration::from_secs(1));
+    // }
+
+    // let result = raft2.execute(vec![2, 2, 3], true).await.unwrap();
+    // println!("execute raf2:{}", String::from_utf8(result).unwrap());
+
+    while raft3.leader() == 0 {
+        info!("wait raft3 has leader");
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
+    let result = raft3.execute(vec![3, 2, 3], true).await.unwrap();
+    println!("execute raf3:{}", String::from_utf8(result).unwrap());
+
     for i in 0..1000000u32 {
         let v = i % 3;
         let raft = match v {
