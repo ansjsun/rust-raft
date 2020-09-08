@@ -200,10 +200,6 @@ impl RaftServer {
             None => return Err(RaftError::RaftNotFound(raft_id)),
         };
 
-        if crate::current_millis() % 10 == 0 {
-            println!("recive heartbeat:{:?} entry:{:?}", raft.info().await, entry);
-        }
-
         match entry {
             Entry::Heartbeat {
                 term,
@@ -252,7 +248,14 @@ async fn log(rs: Arc<RaftServer>, mut stream: TcpStream) {
             Err(e) => Err(e),
         } {
             Ok(None) => stream.write(SUCCESS).await,
-            Ok(Some(v)) => stream.write(&v).await,
+            Ok(Some(v)) => {
+                let result = RaftError::SuccessRaw(v).encode();
+                if let Err(e) = stream.write(&u32::to_be_bytes(result.len() as u32)).await {
+                    Err(e)
+                } else {
+                    stream.write(&result).await
+                }
+            }
             Err(e) => {
                 let result = e.encode();
                 if let Err(e) = stream.write(&u32::to_be_bytes(result.len() as u32)).await {

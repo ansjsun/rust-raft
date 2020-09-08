@@ -18,19 +18,9 @@ use std::time::Duration;
 impl Vote {
     fn update(&mut self, leader: u64, term: u64, end_time: u64) -> bool {
         if self.end_time > current_millis() {
-            println!(
-                "tttttttttttt{}---{}------------{}",
-                self.end_time,
-                current_millis(),
-                self.end_time - current_millis()
-            );
             return false;
         }
         if self.leader != leader && self.term > term {
-            println!(
-                "{}--------------{}--------------{}-----------------{}",
-                self.leader, leader, self.term, term
-            );
             return false;
         }
         self.leader = leader;
@@ -330,7 +320,6 @@ impl Raft {
     pub async fn vote(&self, leader: u64, term: u64, committed: u64) -> RaftResult<()> {
         let self_term = self.term.load(SeqCst);
         if self_term > term {
-            println!("term:{} ---------------------------   {}", self_term, term);
             return Err(RaftError::TermLess);
         }
 
@@ -572,7 +561,6 @@ impl Raft {
                         applied,
                     };
                     if let Err(e) = raft.sender.send(ie.encode()).await {
-                        println!("================================={}", leader_err_time);
                         leader_err_time += 1;
                         if leader_err_time > 5 {
                             leader_err_time = 0;

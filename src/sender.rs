@@ -23,7 +23,6 @@ impl Connection {
             .write(&u32::to_be_bytes(body.len() as u32))
             .await?;
         self.stream.write(body).await?;
-
         Ok(())
     }
 
