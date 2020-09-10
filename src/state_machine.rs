@@ -1,17 +1,18 @@
 use crate::error::*;
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 pub type RSL = Arc<Box<dyn Resolver + Sync + Send + 'static>>;
 pub type SM = Arc<Box<dyn StateMachine + Sync + Send + 'static>>;
 
+#[async_trait]
 pub trait StateMachine {
     /// this is a call execute method for leader, and no change log,
     /// example search method only run leader, now you can call it in replica , it forward to leader and return result .
     fn execute(&self, command: &[u8]) -> RaftResult<Vec<u8>>;
-
     fn apply_log(&self, term: u64, index: u64, command: &[u8]) -> RaftResult<()>;
-    fn apply_member_change(
+    async fn apply_member_change(
         &self,
         term: u64,
         index: u64,
@@ -19,7 +20,8 @@ pub trait StateMachine {
         action: u8,
         exists: bool,
     ) -> RaftResult<()>;
-    fn apply_leader_change(&self, term: u64, index: u64, leader: u64) -> RaftResult<()>;
+
+    async fn apply_leader_change(&self, term: u64, index: u64, leader: u64) -> RaftResult<()>;
 }
 
 pub trait Resolver {

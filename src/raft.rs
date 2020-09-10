@@ -242,7 +242,7 @@ impl Raft {
                 }
                 self.leader.store(leader, SeqCst);
                 self.term.store(term, SeqCst);
-                self.sm.apply_leader_change(term, *index, leader)
+                self.sm.apply_leader_change(term, *index, leader).await
             }
             Entry::MemberChange {
                 term,
@@ -276,6 +276,7 @@ impl Raft {
 
                 self.sm
                     .apply_member_change(*term, *index, node_id, action, exists)
+                    .await
             }
             _ => panic!("not support!!!!!!"),
         }

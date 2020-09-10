@@ -1,9 +1,11 @@
+use async_trait::async_trait;
 use raft4rs::{entity::Config, error::*, state_machine::*};
 
 pub struct MySM {
     pub id: usize,
 }
 
+#[async_trait]
 impl StateMachine for MySM {
     fn apply_log(&self, term: u64, index: u64, command: &[u8]) -> RaftResult<()> {
         if index % 1000 == 0 {
@@ -17,7 +19,12 @@ impl StateMachine for MySM {
         }
         Ok(())
     }
-    fn apply_member_change(
+
+    fn execute(&self, command: &[u8]) -> RaftResult<Vec<u8>> {
+        let v = format!("use execute:{:?} by :{}", command, self.id);
+        Ok(v.as_bytes().to_vec())
+    }
+    async fn apply_member_change(
         &self,
         _term: u64,
         index: u64,
@@ -31,17 +38,12 @@ impl StateMachine for MySM {
         );
         Ok(())
     }
-    fn apply_leader_change(&self, term: u64, index: u64, leader: u64) -> RaftResult<()> {
+    async fn apply_leader_change(&self, term: u64, index: u64, leader: u64) -> RaftResult<()> {
         println!(
             "apply_leader_change {} leader:{} term:{} index:{}",
             self.id, leader, term, index
         );
         Ok(())
-    }
-
-    fn execute(&self, command: &[u8]) -> RaftResult<Vec<u8>> {
-        let v = format!("use execute:{:?} by :{}", command, self.id);
-        Ok(v.as_bytes().to_vec())
     }
 }
 
